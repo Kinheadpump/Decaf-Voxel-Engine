@@ -8,5 +8,9 @@
 
 !/config.toml
 !/rustfmt.toml
+!/.clippy.toml
+
+!/.cargo
+!/.github
 
 !/debug.bat
