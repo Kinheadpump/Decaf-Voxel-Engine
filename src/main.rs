@@ -1,3 +1,9 @@
+mod config;
+mod logging;
+
 fn main() {
-    println!("Hello, world!");
+    logging::init_logging();
+
+    tracing::info!("Engine starting");
+    tracing::debug!("Debug logging enabled if RUST_LOG allows it");
 }
