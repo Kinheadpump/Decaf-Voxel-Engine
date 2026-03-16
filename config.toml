@@ -1,2 +1,9 @@
 [debug]
 enable_profiler = false
+
+[render]
+vsync = true
+render_radius = 8
+
+[world]
+seed = 12345
