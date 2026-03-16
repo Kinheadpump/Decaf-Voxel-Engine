@@ -8,7 +8,7 @@ pub struct DebugConfig {
 
 impl DebugConfig {
     pub fn load() -> Self {
-        let path = "config/debug.toml";
+        let path = "config.toml";
         let config_str =
             fs::read_to_string(path).unwrap_or_else(|e| panic!("Failed to read {}: {}", path, e));
 
