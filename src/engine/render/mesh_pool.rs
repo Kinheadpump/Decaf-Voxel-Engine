@@ -26,11 +26,7 @@ impl MeshPool {
             mapped_at_creation: false,
         });
 
-        Self {
-            face_buffer,
-            capacity_faces,
-            free: vec![(0, capacity_faces)],
-        }
+        Self { face_buffer, capacity_faces, free: vec![(0, capacity_faces)] }
     }
 
     pub fn alloc(&mut self, count: u32) -> Option<u32> {

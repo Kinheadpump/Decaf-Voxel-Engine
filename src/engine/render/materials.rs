@@ -11,11 +11,7 @@ impl Materials {
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("block_texture_array"),
-            size: wgpu::Extent3d {
-                width: size,
-                height: size,
-                depth_or_array_layers: layer_count,
-            },
+            size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: layer_count },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -61,11 +57,7 @@ impl Materials {
                 bytes_per_row: Some(size * 4),
                 rows_per_image: Some(size),
             },
-            wgpu::Extent3d {
-                width: size,
-                height: size,
-                depth_or_array_layers: layer_count,
-            },
+            wgpu::Extent3d { width: size, height: size, depth_or_array_layers: layer_count },
         );
 
         let view = texture.create_view(&wgpu::TextureViewDescriptor {

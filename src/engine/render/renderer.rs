@@ -1,24 +1,23 @@
 use ahash::AHashMap;
+use std::num::NonZeroU64;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
 use crate::engine::{
-    core::{types::{CHUNK_SIZE_I32, INITIAL_FACE_CAPACITY, MAX_VISIBLE_DRAWS}},
+    core::types::{CHUNK_SIZE_I32, INITIAL_FACE_CAPACITY, MAX_VISIBLE_DRAWS},
     render::{
         camera::{Camera, CameraUniform},
         frustum::Frustum,
-        gpu_types::{BaseQuadVertex, ChunkMeshCpu, DrawIndirectArgs, DrawMeta, PackedFace},
+        gpu_types::{
+            BaseQuadVertex, ChunkMeshCpu, DebugViewMode, DrawMeta, PackedFace,
+            RenderSettingsUniform,
+        },
         materials::Materials,
         mesh_pool::{ChunkGpuEntry, GpuSlice, MeshPool},
         targets::DepthTarget,
     },
-    world::{
-        accessor::VoxelAccessor,
-        coord::ChunkCoord,
-        mesher::{build_chunk_mesh},
-        storage::World,
-    },
+    world::{accessor::VoxelAccessor, coord::ChunkCoord, mesher::build_chunk_mesh, storage::World},
 };
 
 pub struct Renderer {
@@ -34,8 +33,9 @@ pub struct Renderer {
     pub gpu_entries: AHashMap<ChunkCoord, ChunkGpuEntry>,
 
     pub draw_meta_buffer: wgpu::Buffer,
-    pub indirect_buffer: wgpu::Buffer,
+    pub draw_meta_stride: u32,
     pub camera_buffer: wgpu::Buffer,
+    pub render_settings_buffer: wgpu::Buffer,
     pub base_quad_buffer: wgpu::Buffer,
 
     pub camera_bind_group: wgpu::BindGroup,
@@ -44,6 +44,7 @@ pub struct Renderer {
 
     pub pipeline: wgpu::RenderPipeline,
     pub materials: Materials,
+    pub debug_view_mode: DebugViewMode,
 }
 
 impl Renderer {
@@ -61,7 +62,7 @@ impl Renderer {
             .await
             .ok_or_else(|| anyhow::anyhow!("no suitable GPU adapter found"))?;
 
-        let required_features = wgpu::Features::MULTI_DRAW_INDIRECT;
+        let required_features = wgpu::Features::empty();
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
@@ -92,18 +93,15 @@ impl Renderer {
         let depth_target = DepthTarget::create(&device, config.width, config.height);
 
         let mesh_pool = MeshPool::new(&device, INITIAL_FACE_CAPACITY as u32);
+        let draw_meta_size = std::mem::size_of::<DrawMeta>() as u32;
+        let draw_meta_alignment = device.limits().min_uniform_buffer_offset_alignment;
+        let draw_meta_stride = ((draw_meta_size + draw_meta_alignment - 1) / draw_meta_alignment)
+            * draw_meta_alignment;
 
         let draw_meta_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("draw_meta_buffer"),
-            size: (MAX_VISIBLE_DRAWS * std::mem::size_of::<DrawMeta>()) as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let indirect_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("indirect_buffer"),
-            size: (MAX_VISIBLE_DRAWS * std::mem::size_of::<DrawIndirectArgs>()) as u64,
-            usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
+            size: draw_meta_stride as u64 * MAX_VISIBLE_DRAWS as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
@@ -112,6 +110,12 @@ impl Renderer {
             size: std::mem::size_of::<CameraUniform>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
+        });
+
+        let render_settings_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("render_settings_buffer"),
+            contents: bytemuck::bytes_of(&RenderSettingsUniform::new(DebugViewMode::Shaded)),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
         let base_quad = [
@@ -131,16 +135,33 @@ impl Renderer {
 
         let camera_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("camera_bgl"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: Some(
+                            NonZeroU64::new(std::mem::size_of::<CameraUniform>() as u64).unwrap(),
+                        ),
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: Some(
+                            NonZeroU64::new(std::mem::size_of::<RenderSettingsUniform>() as u64)
+                                .unwrap(),
+                        ),
+                    },
+                    count: None,
+                },
+            ],
         });
 
         let scene_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -148,11 +169,11 @@ impl Renderer {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: true,
+                        min_binding_size: Some(NonZeroU64::new(draw_meta_size as u64).unwrap()),
                     },
                     count: None,
                 },
@@ -194,10 +215,13 @@ impl Renderer {
         let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("camera_bg"),
             layout: &camera_bgl,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: camera_buffer.as_entire_binding(),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: camera_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: render_settings_buffer.as_entire_binding(),
+                },
+            ],
         });
 
         let scene_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -206,7 +230,11 @@ impl Renderer {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: draw_meta_buffer.as_entire_binding(),
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &draw_meta_buffer,
+                        offset: 0,
+                        size: Some(NonZeroU64::new(draw_meta_size as u64).unwrap()),
+                    }),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
@@ -294,22 +322,29 @@ impl Renderer {
             cpu_meshes: AHashMap::new(),
             gpu_entries: AHashMap::new(),
             draw_meta_buffer,
-            indirect_buffer,
+            draw_meta_stride,
             camera_buffer,
+            render_settings_buffer,
             base_quad_buffer,
             camera_bind_group,
             scene_bind_group,
             material_bind_group,
             pipeline,
             materials,
+            debug_view_mode: DebugViewMode::Shaded,
         })
+    }
+
+    pub fn set_debug_view_mode(&mut self, mode: DebugViewMode) {
+        self.debug_view_mode = mode;
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
         self.config.width = width.max(1);
         self.config.height = height.max(1);
         self.surface.configure(&self.device, &self.config);
-        self.depth_target = DepthTarget::create(&self.device, self.config.width, self.config.height);
+        self.depth_target =
+            DepthTarget::create(&self.device, self.config.width, self.config.height);
     }
 
     pub fn rebuild_dirty_meshes(&mut self, world: &mut World) -> anyhow::Result<()> {
@@ -322,7 +357,8 @@ impl Renderer {
             let world_ref: &World = &*world;
             let accessor = VoxelAccessor { world: world_ref };
 
-            dirty.into_iter()
+            dirty
+                .into_iter()
                 .filter_map(|coord| {
                     let chunk = world_ref.chunks.get(&coord)?;
                     let mesh = build_chunk_mesh(coord, chunk, &accessor);
@@ -354,7 +390,8 @@ impl Renderer {
             }
 
             let count = faces.len() as u32;
-            let offset = self.mesh_pool
+            let offset = self
+                .mesh_pool
                 .alloc(count)
                 .ok_or_else(|| anyhow::anyhow!("face buffer exhausted"))?;
 
@@ -378,11 +415,15 @@ impl Renderer {
             0,
             bytemuck::bytes_of(&camera.build_uniform()),
         );
+        self.queue.write_buffer(
+            &self.render_settings_buffer,
+            0,
+            bytemuck::bytes_of(&RenderSettingsUniform::new(self.debug_view_mode)),
+        );
 
-        let frustum = Frustum::from_view_proj(camera.view_proj());
+        let frustum = Frustum::from_camera(camera);
 
-        let mut metas = Vec::<DrawMeta>::with_capacity(4096);
-        let mut cmds = Vec::<DrawIndirectArgs>::with_capacity(4096);
+        let mut visible_draws = Vec::<DrawMeta>::with_capacity(4096);
 
         for (&coord, entry) in &self.gpu_entries {
             let origin = coord.world_origin();
@@ -394,35 +435,46 @@ impl Renderer {
             }
 
             for dir in 0..6usize {
-                let Some(slice) = entry.dirs[dir] else { continue; };
+                let Some(slice) = entry.dirs[dir] else {
+                    continue;
+                };
                 if slice.count == 0 {
                     continue;
                 }
 
-                metas.push(DrawMeta {
+                visible_draws.push(DrawMeta {
                     chunk_origin: [origin.x, origin.y, origin.z, 0],
                     face_dir: dir as u32,
                     face_offset: slice.offset,
                     face_count: slice.count,
-                    _pad0: 0,
-                });
-
-                cmds.push(DrawIndirectArgs {
-                    vertex_count: 4,
-                    instance_count: slice.count,
-                    first_vertex: 0,
-                    first_instance: 0,
+                    draw_id: 0,
                 });
             }
         }
 
-        if metas.len() > MAX_VISIBLE_DRAWS {
-            metas.truncate(MAX_VISIBLE_DRAWS);
-            cmds.truncate(MAX_VISIBLE_DRAWS);
+        visible_draws.sort_by_key(|draw| {
+            (draw.chunk_origin[0], draw.chunk_origin[1], draw.chunk_origin[2], draw.face_dir)
+        });
+        for (draw_id, draw) in visible_draws.iter_mut().enumerate() {
+            draw.draw_id = draw_id as u32;
         }
 
-        self.queue.write_buffer(&self.draw_meta_buffer, 0, bytemuck::cast_slice(&metas));
-        self.queue.write_buffer(&self.indirect_buffer, 0, bytemuck::cast_slice(&cmds));
+        if visible_draws.len() > MAX_VISIBLE_DRAWS {
+            visible_draws.truncate(MAX_VISIBLE_DRAWS);
+        }
+
+        let mut draw_meta_bytes = vec![0u8; visible_draws.len() * self.draw_meta_stride as usize];
+        let draw_meta_size = std::mem::size_of::<DrawMeta>();
+
+        for (i, draw) in visible_draws.iter().enumerate() {
+            let offset = i * self.draw_meta_stride as usize;
+            draw_meta_bytes[offset..offset + draw_meta_size]
+                .copy_from_slice(bytemuck::bytes_of(draw));
+        }
+
+        if !draw_meta_bytes.is_empty() {
+            self.queue.write_buffer(&self.draw_meta_buffer, 0, &draw_meta_bytes);
+        }
 
         let frame = self.surface.get_current_texture()?;
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -461,11 +513,14 @@ impl Renderer {
 
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.camera_bind_group, &[]);
-            pass.set_bind_group(1, &self.scene_bind_group, &[]);
             pass.set_bind_group(2, &self.material_bind_group, &[]);
             pass.set_vertex_buffer(0, self.base_quad_buffer.slice(..));
 
-            pass.multi_draw_indirect(&self.indirect_buffer, 0, cmds.len() as u32);
+            for (i, draw) in visible_draws.iter().enumerate() {
+                let dynamic_offset = i as u32 * self.draw_meta_stride;
+                pass.set_bind_group(1, &self.scene_bind_group, &[dynamic_offset]);
+                pass.draw(0..4, 0..draw.face_count);
+            }
         }
 
         self.queue.submit(Some(encoder.finish()));

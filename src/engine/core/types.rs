@@ -24,24 +24,18 @@ pub enum FaceDir {
 }
 
 impl FaceDir {
-    pub const ALL: [FaceDir; 6] = [
-        FaceDir::PosX,
-        FaceDir::NegX,
-        FaceDir::PosY,
-        FaceDir::NegY,
-        FaceDir::PosZ,
-        FaceDir::NegZ,
-    ];
+    pub const ALL: [FaceDir; 6] =
+        [FaceDir::PosX, FaceDir::NegX, FaceDir::PosY, FaceDir::NegY, FaceDir::PosZ, FaceDir::NegZ];
 
     #[inline]
     pub fn normal(self) -> IVec3 {
         match self {
-            FaceDir::PosX => IVec3::new( 1,  0,  0),
-            FaceDir::NegX => IVec3::new(-1,  0,  0),
-            FaceDir::PosY => IVec3::new( 0,  1,  0),
-            FaceDir::NegY => IVec3::new( 0, -1,  0),
-            FaceDir::PosZ => IVec3::new( 0,  0,  1),
-            FaceDir::NegZ => IVec3::new( 0,  0, -1),
+            FaceDir::PosX => IVec3::new(1, 0, 0),
+            FaceDir::NegX => IVec3::new(-1, 0, 0),
+            FaceDir::PosY => IVec3::new(0, 1, 0),
+            FaceDir::NegY => IVec3::new(0, -1, 0),
+            FaceDir::PosZ => IVec3::new(0, 0, 1),
+            FaceDir::NegZ => IVec3::new(0, 0, -1),
         }
     }
 }

@@ -31,10 +31,6 @@ impl Camera {
         perspective_reverse_infinite_rh(self.fov_y_radians, self.aspect, self.near_plane)
     }
 
-    pub fn view_proj(&self) -> Mat4 {
-        self.proj() * self.view()
-    }
-
     pub fn build_uniform(&self) -> CameraUniform {
         let view = self.view();
         let proj = self.proj();
@@ -58,10 +54,22 @@ pub fn perspective_reverse_infinite_rh(fovy: f32, aspect: f32, z_near: f32) -> M
     let f = 1.0 / (fovy * 0.5).tan();
 
     Mat4::from_cols_array(&[
-        f / aspect, 0.0, 0.0, 0.0,
-        0.0, f, 0.0, 0.0,
-        0.0, 0.0, 0.0, -1.0,
-        0.0, 0.0, z_near, 0.0,
+        f / aspect,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        f,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        -1.0,
+        0.0,
+        0.0,
+        z_near,
+        0.0,
     ])
 }
 
@@ -77,4 +85,30 @@ pub struct CameraUniform {
     pub camera_pos: [f32; 4],
     pub near_plane: f32,
     pub _pad: [f32; 3],
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use glam::Vec4;
+
+    #[test]
+    fn reverse_z_maps_near_plane_to_one() {
+        let near = 0.1;
+        let proj = perspective_reverse_infinite_rh(70.0_f32.to_radians(), 16.0 / 9.0, near);
+        let clip = proj * Vec4::new(0.0, 0.0, -near, 1.0);
+        let ndc_z = clip.z / clip.w;
+
+        assert!((ndc_z - 1.0).abs() < 1.0e-5, "expected near plane at 1.0, got {ndc_z}");
+    }
+
+    #[test]
+    fn reverse_z_pushes_far_points_towards_zero() {
+        let proj = perspective_reverse_infinite_rh(70.0_f32.to_radians(), 16.0 / 9.0, 0.1);
+        let clip = proj * Vec4::new(0.0, 0.0, -10_000.0, 1.0);
+        let ndc_z = clip.z / clip.w;
+
+        assert!(ndc_z > 0.0);
+        assert!(ndc_z < 0.001, "expected distant depth near zero, got {ndc_z}");
+    }
 }

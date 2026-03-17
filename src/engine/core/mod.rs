@@ -1,3 +1,3 @@
-pub mod types;
-pub mod math;
 pub mod jobs;
+pub mod math;
+pub mod types;

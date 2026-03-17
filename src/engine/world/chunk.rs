@@ -16,11 +16,7 @@ pub struct Chunk {
 
 impl Chunk {
     pub fn new() -> Self {
-        Self {
-            voxels: Box::new([Voxel::AIR; CHUNK_VOLUME]),
-            dirty: true,
-            generation: 0,
-        }
+        Self { voxels: Box::new([Voxel::AIR; CHUNK_VOLUME]), dirty: true, generation: 0 }
     }
 
     #[inline]

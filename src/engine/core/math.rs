@@ -1,1 +1,1 @@
-pub use glam::{IVec3, Mat4, UVec3, Vec2, Vec3, Vec4};
+pub use glam::{IVec3, Mat4, UVec3, Vec3};

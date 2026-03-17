@@ -1,11 +1,10 @@
 use crate::engine::{
-    core::{math::IVec3, types::{CHUNK_SIZE, FaceDir}},
-    render::gpu_types::{ChunkMeshCpu, PackedFace},
-    world::{
-        accessor::VoxelAccessor,
-        chunk::Chunk,
-        coord::ChunkCoord,
+    core::{
+        math::IVec3,
+        types::{CHUNK_SIZE, FaceDir},
     },
+    render::gpu_types::{ChunkMeshCpu, PackedFace},
+    world::{accessor::VoxelAccessor, chunk::Chunk, coord::ChunkCoord},
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -60,16 +59,13 @@ fn build_direction_mesh(
                 let visible = neighbor.is_air();
 
                 mask[u][v] = if visible {
-                    MaskCell {
-                        visible: true,
-                        block_id: voxel.block_id(),
-                    }
+                    MaskCell { visible: true, block_id: voxel.block_id() }
                 } else {
                     MaskCell::default()
                 };
             }
         }
-        
+
         // Greedy meshing on the mask
         for v in 0..CHUNK_SIZE {
             for u in 0..CHUNK_SIZE {
@@ -109,7 +105,7 @@ fn build_direction_mesh(
                         used[uu][vv] = true;
                     }
                 }
-                
+
                 let anchor = face_local_xyz(dir, depth, u, v);
 
                 let packed = PackedFace::pack(
@@ -129,8 +125,11 @@ fn build_direction_mesh(
 
 fn face_local_xyz(dir: FaceDir, depth: usize, u: usize, v: usize) -> IVec3 {
     match dir {
-        FaceDir::PosX | FaceDir::NegX => IVec3::new(depth as i32, v as i32, u as i32),
-        FaceDir::PosY | FaceDir::NegY => IVec3::new(u as i32, depth as i32, v as i32),
-        FaceDir::PosZ | FaceDir::NegZ => IVec3::new(u as i32, v as i32, depth as i32),
+        FaceDir::PosX => IVec3::new(depth as i32, u as i32, v as i32),
+        FaceDir::NegX => IVec3::new(depth as i32, v as i32, u as i32),
+        FaceDir::PosY => IVec3::new(v as i32, depth as i32, u as i32),
+        FaceDir::NegY => IVec3::new(u as i32, depth as i32, v as i32),
+        FaceDir::PosZ => IVec3::new(u as i32, v as i32, depth as i32),
+        FaceDir::NegZ => IVec3::new(v as i32, u as i32, depth as i32),
     }
 }
