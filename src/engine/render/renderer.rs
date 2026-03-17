@@ -8,9 +8,9 @@ use crate::engine::{
         camera::{Camera, CameraUniform},
         frustum::Frustum,
         gpu_types::{
-            BaseQuadVertex, ChunkMeshCpu, DebugOverlayInput, DebugViewMode, DrawMeta, PackedFace,
-            RenderBucket, RenderSettingsUniform, RenderStats, TextGlyphInstance,
-            TextOverlayUniform,
+            BaseQuadVertex, ChunkMeshCpu, DebugOverlayInput, DebugViewMode, DrawMeta, DrawRef,
+            GpuDrawIndirect, PackedFace, RenderBucket, RenderSettingsUniform, RenderStats,
+            TextGlyphInstance, TextOverlayUniform,
         },
         hiz::HiZOcclusion,
         materials::{Materials, TextureRegistry},
@@ -39,12 +39,15 @@ pub struct Renderer {
     pub gpu_entries: ahash::AHashMap<ChunkCoord, ChunkGpuEntry>,
 
     pub draw_meta_buffer: wgpu::Buffer,
-    pub draw_meta_stride: u32,
+    pub draw_ref_buffer: wgpu::Buffer,
+    pub draw_ref_stride: u32,
+    pub indirect_buffer: wgpu::Buffer,
     pub camera_buffer: wgpu::Buffer,
     pub render_settings_buffer: wgpu::Buffer,
     pub overlay_uniform_buffer: wgpu::Buffer,
     pub overlay_instance_buffer: wgpu::Buffer,
     pub base_quad_buffer: wgpu::Buffer,
+    pub base_line_buffer: wgpu::Buffer,
 
     pub scene_bind_group_layout: wgpu::BindGroupLayout,
     pub camera_bind_group: wgpu::BindGroup,
@@ -54,6 +57,7 @@ pub struct Renderer {
 
     pub opaque_pipeline: wgpu::RenderPipeline,
     pub transparent_pipeline: wgpu::RenderPipeline,
+    pub wireframe_pipeline: wgpu::RenderPipeline,
     pub overlay_pipeline: wgpu::RenderPipeline,
     pub hiz_occlusion: Option<HiZOcclusion>,
     pub mesher: ThreadedMesher,
@@ -62,6 +66,7 @@ pub struct Renderer {
     pub debug_view_mode: DebugViewMode,
     pub debug_overlay: Option<DebugOverlayInput>,
     pub last_frame_stats: RenderStats,
+    pub use_multi_draw_indirect: bool,
 }
 
 impl Renderer {
@@ -84,7 +89,24 @@ impl Renderer {
             .await
             .ok_or_else(|| anyhow::anyhow!("no suitable GPU adapter found"))?;
 
-        let required_features = wgpu::Features::empty();
+        let adapter_features = adapter.features();
+        let downlevel = adapter.get_downlevel_capabilities();
+        let supports_indirect_first_instance = adapter_features
+            .contains(wgpu::Features::INDIRECT_FIRST_INSTANCE)
+            && downlevel.flags.contains(
+                wgpu::DownlevelFlags::VERTEX_AND_INSTANCE_INDEX_RESPECTS_RESPECTIVE_FIRST_VALUE_IN_INDIRECT_DRAW,
+            );
+        let use_multi_draw_indirect = supports_indirect_first_instance
+            && adapter_features.contains(wgpu::Features::MULTI_DRAW_INDIRECT);
+        let mut required_features = wgpu::Features::empty();
+
+        if supports_indirect_first_instance {
+            required_features |= wgpu::Features::INDIRECT_FIRST_INSTANCE;
+        }
+        if use_multi_draw_indirect {
+            required_features |= wgpu::Features::MULTI_DRAW_INDIRECT;
+        }
+
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
@@ -117,14 +139,27 @@ impl Renderer {
         let hiz_occlusion =
             enable_hiz_occlusion.then(|| HiZOcclusion::new(&device, config.width, config.height));
         let draw_meta_size = std::mem::size_of::<DrawMeta>() as u32;
-        let draw_meta_alignment = device.limits().min_uniform_buffer_offset_alignment;
-        let draw_meta_stride = ((draw_meta_size + draw_meta_alignment - 1) / draw_meta_alignment)
-            * draw_meta_alignment;
+        let draw_ref_size = std::mem::size_of::<DrawRef>() as u32;
+        let draw_ref_alignment = device.limits().min_uniform_buffer_offset_alignment;
+        let draw_ref_stride =
+            ((draw_ref_size + draw_ref_alignment - 1) / draw_ref_alignment) * draw_ref_alignment;
 
         let draw_meta_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("draw_meta_buffer"),
-            size: draw_meta_stride as u64 * MAX_VISIBLE_DRAWS as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            size: draw_meta_size as u64 * MAX_VISIBLE_DRAWS as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let draw_ref_bytes = build_draw_ref_bytes(MAX_VISIBLE_DRAWS, draw_ref_stride as usize);
+        let draw_ref_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("draw_ref_buffer"),
+            contents: &draw_ref_bytes,
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let indirect_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("indirect_buffer"),
+            size: (MAX_VISIBLE_DRAWS * std::mem::size_of::<GpuDrawIndirect>()) as u64,
+            usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
@@ -137,7 +172,7 @@ impl Renderer {
 
         let render_settings_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("render_settings_buffer"),
-            contents: bytemuck::bytes_of(&RenderSettingsUniform::new(DebugViewMode::Shaded)),
+            contents: bytemuck::bytes_of(&RenderSettingsUniform::new(DebugViewMode::Shaded, 0)),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
@@ -164,6 +199,18 @@ impl Renderer {
         let base_quad_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("base_quad_buffer"),
             contents: bytemuck::cast_slice(&base_quad),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let base_line = [
+            BaseQuadVertex { uv: [0.0, 0.0] },
+            BaseQuadVertex { uv: [1.0, 0.0] },
+            BaseQuadVertex { uv: [1.0, 1.0] },
+            BaseQuadVertex { uv: [0.0, 1.0] },
+            BaseQuadVertex { uv: [0.0, 0.0] },
+        ];
+        let base_line_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("base_line_buffer"),
+            contents: bytemuck::cast_slice(&base_line),
             usage: wgpu::BufferUsages::VERTEX,
         });
 
@@ -211,12 +258,22 @@ impl Renderer {
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: true,
-                            min_binding_size: Some(NonZeroU64::new(draw_meta_size as u64).unwrap()),
+                            min_binding_size: Some(NonZeroU64::new(draw_ref_size as u64).unwrap()),
                         },
                         count: None,
                     },
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
+                        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: Some(NonZeroU64::new(draw_meta_size as u64).unwrap()),
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
                         visibility: wgpu::ShaderStages::VERTEX,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Storage { read_only: true },
@@ -285,13 +342,14 @@ impl Renderer {
                 wgpu::BindGroupEntry {
                     binding: 0,
                     resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &draw_meta_buffer,
+                        buffer: &draw_ref_buffer,
                         offset: 0,
-                        size: Some(NonZeroU64::new(draw_meta_size as u64).unwrap()),
+                        size: Some(NonZeroU64::new(draw_ref_size as u64).unwrap()),
                     }),
                 },
+                wgpu::BindGroupEntry { binding: 1, resource: draw_meta_buffer.as_entire_binding() },
                 wgpu::BindGroupEntry {
-                    binding: 1,
+                    binding: 2,
                     resource: mesh_pool.face_buffer.as_entire_binding(),
                 },
             ],
@@ -363,6 +421,13 @@ impl Renderer {
             false,
             "voxel_transparent_pipeline",
         );
+        let wireframe_pipeline = create_wireframe_pipeline(
+            &device,
+            &pipeline_layout,
+            &shader,
+            config.format,
+            depth_target.format,
+        );
         let overlay_pipeline = create_overlay_pipeline(
             &device,
             &overlay_pipeline_layout,
@@ -370,6 +435,12 @@ impl Renderer {
             config.format,
             depth_target.format,
         );
+
+        if use_multi_draw_indirect {
+            crate::log_info!("Using multi_draw_indirect renderer path");
+        } else {
+            crate::log_info!("Using looped draw renderer fallback");
+        }
 
         Ok(Self {
             surface,
@@ -380,12 +451,15 @@ impl Renderer {
             mesh_pool,
             gpu_entries: ahash::AHashMap::new(),
             draw_meta_buffer,
-            draw_meta_stride,
+            draw_ref_buffer,
+            draw_ref_stride,
+            indirect_buffer,
             camera_buffer,
             render_settings_buffer,
             overlay_uniform_buffer,
             overlay_instance_buffer,
             base_quad_buffer,
+            base_line_buffer,
             scene_bind_group_layout,
             camera_bind_group,
             scene_bind_group,
@@ -393,6 +467,7 @@ impl Renderer {
             overlay_bind_group,
             opaque_pipeline,
             transparent_pipeline,
+            wireframe_pipeline,
             overlay_pipeline,
             hiz_occlusion,
             mesher,
@@ -404,6 +479,7 @@ impl Renderer {
                 hiz_enabled: enable_hiz_occlusion,
                 ..Default::default()
             },
+            use_multi_draw_indirect,
         })
     }
 
@@ -622,7 +698,7 @@ impl Renderer {
     }
 
     fn rebuild_scene_bind_group(&mut self) {
-        let draw_meta_size = std::mem::size_of::<DrawMeta>() as u64;
+        let draw_ref_size = std::mem::size_of::<DrawRef>() as u64;
 
         self.scene_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("scene_bg"),
@@ -631,13 +707,17 @@ impl Renderer {
                 wgpu::BindGroupEntry {
                     binding: 0,
                     resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &self.draw_meta_buffer,
+                        buffer: &self.draw_ref_buffer,
                         offset: 0,
-                        size: Some(NonZeroU64::new(draw_meta_size).unwrap()),
+                        size: Some(NonZeroU64::new(draw_ref_size).unwrap()),
                     }),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
+                    resource: self.draw_meta_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
                     resource: self.mesh_pool.face_buffer.as_entire_binding(),
                 },
             ],
@@ -722,7 +802,13 @@ impl Renderer {
         self.queue.write_buffer(
             &self.render_settings_buffer,
             0,
-            bytemuck::bytes_of(&RenderSettingsUniform::new(self.debug_view_mode)),
+            bytemuck::bytes_of(&RenderSettingsUniform::new(
+                self.debug_view_mode,
+                u32::from(
+                    self.use_multi_draw_indirect
+                        && self.debug_view_mode != DebugViewMode::Wireframe,
+                ),
+            )),
         );
 
         let frustum = Frustum::from_camera(camera);
@@ -823,17 +909,25 @@ impl Renderer {
             draw.draw_id = draw_id as u32;
         }
 
-        let mut draw_meta_bytes = vec![0u8; staged_draws.len() * self.draw_meta_stride as usize];
-        let draw_meta_size = std::mem::size_of::<DrawMeta>();
-
-        for (i, draw) in staged_draws.iter().enumerate() {
-            let offset = i * self.draw_meta_stride as usize;
-            draw_meta_bytes[offset..offset + draw_meta_size]
-                .copy_from_slice(bytemuck::bytes_of(draw));
+        if !staged_draws.is_empty() {
+            self.queue.write_buffer(&self.draw_meta_buffer, 0, bytemuck::cast_slice(&staged_draws));
         }
+        let use_indirect_draws =
+            self.use_multi_draw_indirect && self.debug_view_mode != DebugViewMode::Wireframe;
 
-        if !draw_meta_bytes.is_empty() {
-            self.queue.write_buffer(&self.draw_meta_buffer, 0, &draw_meta_bytes);
+        if use_indirect_draws && !staged_draws.is_empty() {
+            let indirect_draws: Vec<_> = staged_draws
+                .iter()
+                .enumerate()
+                .map(|(draw_index, draw)| {
+                    GpuDrawIndirect::for_draw(draw_index as u32, draw.face_count)
+                })
+                .collect();
+            self.queue.write_buffer(
+                &self.indirect_buffer,
+                0,
+                bytemuck::cast_slice(&indirect_draws),
+            );
         }
 
         let current_stats = RenderStats {
@@ -907,21 +1001,48 @@ impl Renderer {
 
             pass.set_bind_group(0, &self.camera_bind_group, &[]);
             pass.set_bind_group(2, &self.material_bind_group, &[]);
-            pass.set_vertex_buffer(0, self.base_quad_buffer.slice(..));
+            if self.debug_view_mode == DebugViewMode::Wireframe {
+                pass.set_vertex_buffer(0, self.base_line_buffer.slice(..));
+                pass.set_pipeline(&self.wireframe_pipeline);
 
-            pass.set_pipeline(&self.opaque_pipeline);
-            for (i, draw) in staged_draws.iter().take(opaque_count).enumerate() {
-                let dynamic_offset = i as u32 * self.draw_meta_stride;
-                pass.set_bind_group(1, &self.scene_bind_group, &[dynamic_offset]);
-                pass.draw(0..4, 0..draw.face_count);
-            }
-
-            if opaque_count < staged_draws.len() {
-                pass.set_pipeline(&self.transparent_pipeline);
-                for (i, draw) in staged_draws.iter().enumerate().skip(opaque_count) {
-                    let dynamic_offset = i as u32 * self.draw_meta_stride;
+                for (i, draw) in staged_draws.iter().enumerate() {
+                    let dynamic_offset = i as u32 * self.draw_ref_stride;
                     pass.set_bind_group(1, &self.scene_bind_group, &[dynamic_offset]);
-                    pass.draw(0..4, 0..draw.face_count);
+                    pass.draw(0..5, 0..draw.face_count);
+                }
+            } else {
+                pass.set_vertex_buffer(0, self.base_quad_buffer.slice(..));
+
+                pass.set_pipeline(&self.opaque_pipeline);
+                if use_indirect_draws {
+                    if opaque_count > 0 {
+                        pass.set_bind_group(1, &self.scene_bind_group, &[0]);
+                        pass.multi_draw_indirect(&self.indirect_buffer, 0, opaque_count as u32);
+                    }
+                } else {
+                    for (i, draw) in staged_draws.iter().take(opaque_count).enumerate() {
+                        let dynamic_offset = i as u32 * self.draw_ref_stride;
+                        pass.set_bind_group(1, &self.scene_bind_group, &[dynamic_offset]);
+                        pass.draw(0..4, 0..draw.face_count);
+                    }
+                }
+
+                if opaque_count < staged_draws.len() {
+                    pass.set_pipeline(&self.transparent_pipeline);
+                    if use_indirect_draws {
+                        pass.set_bind_group(1, &self.scene_bind_group, &[0]);
+                        pass.multi_draw_indirect(
+                            &self.indirect_buffer,
+                            (opaque_count * std::mem::size_of::<GpuDrawIndirect>()) as u64,
+                            (staged_draws.len() - opaque_count) as u32,
+                        );
+                    } else {
+                        for (i, draw) in staged_draws.iter().enumerate().skip(opaque_count) {
+                            let dynamic_offset = i as u32 * self.draw_ref_stride;
+                            pass.set_bind_group(1, &self.scene_bind_group, &[dynamic_offset]);
+                            pass.draw(0..4, 0..draw.face_count);
+                        }
+                    }
                 }
             }
 
@@ -1003,6 +1124,57 @@ fn create_voxel_pipeline(
         depth_stencil: Some(wgpu::DepthStencilState {
             format: depth_format,
             depth_write_enabled,
+            depth_compare: wgpu::CompareFunction::Greater,
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
+    })
+}
+
+fn create_wireframe_pipeline(
+    device: &wgpu::Device,
+    pipeline_layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    color_format: wgpu::TextureFormat,
+    depth_format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("voxel_wireframe_pipeline"),
+        layout: Some(pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: "vs_main",
+            buffers: &[wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<BaseQuadVertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &wgpu::vertex_attr_array![0 => Float32x2],
+            }],
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: "fs_main",
+            targets: &[Some(wgpu::ColorTargetState {
+                format: color_format,
+                blend: Some(wgpu::BlendState::REPLACE),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::LineStrip,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: None,
+            unclipped_depth: false,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            conservative: false,
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: depth_format,
+            depth_write_enabled: true,
             depth_compare: wgpu::CompareFunction::Greater,
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState::default(),
@@ -1101,6 +1273,20 @@ fn chunk_face_can_face_camera(
     }
 }
 
+fn build_draw_ref_bytes(max_draws: usize, draw_ref_stride: usize) -> Vec<u8> {
+    let mut draw_ref_bytes = vec![0u8; max_draws * draw_ref_stride];
+
+    for draw_index in 0..max_draws {
+        let offset = draw_index * draw_ref_stride;
+        let draw_ref = DrawRef { draw_meta_index: draw_index as u32, _pad: [0; 3] };
+        let draw_ref_size = std::mem::size_of::<DrawRef>();
+        draw_ref_bytes[offset..offset + draw_ref_size]
+            .copy_from_slice(bytemuck::bytes_of(&draw_ref));
+    }
+
+    draw_ref_bytes
+}
+
 fn next_face_capacity(current_capacity: u32, required_faces: u32) -> u32 {
     if current_capacity == 0 {
         return required_faces.max(1);
@@ -1120,7 +1306,8 @@ fn next_face_capacity(current_capacity: u32, required_faces: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{chunk_face_can_face_camera, next_face_capacity};
+    use super::{build_draw_ref_bytes, chunk_face_can_face_camera, next_face_capacity};
+    use crate::engine::render::gpu_types::DrawRef;
 
     #[test]
     fn capacity_stays_when_requirement_fits() {
@@ -1166,5 +1353,20 @@ mod tests {
         assert!(chunk_face_can_face_camera(camera, chunk_min, chunk_max, 1));
         assert!(chunk_face_can_face_camera(camera, chunk_min, chunk_max, 2));
         assert!(chunk_face_can_face_camera(camera, chunk_min, chunk_max, 3));
+    }
+
+    #[test]
+    fn draw_ref_bytes_encode_sequential_draw_indices() {
+        let bytes = build_draw_ref_bytes(3, 256);
+
+        let first = bytemuck::from_bytes::<DrawRef>(&bytes[0..std::mem::size_of::<DrawRef>()]);
+        let second =
+            bytemuck::from_bytes::<DrawRef>(&bytes[256..256 + std::mem::size_of::<DrawRef>()]);
+        let third =
+            bytemuck::from_bytes::<DrawRef>(&bytes[512..512 + std::mem::size_of::<DrawRef>()]);
+
+        assert_eq!(first.draw_meta_index, 0);
+        assert_eq!(second.draw_meta_index, 1);
+        assert_eq!(third.draw_meta_index, 2);
     }
 }

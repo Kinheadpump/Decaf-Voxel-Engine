@@ -1,6 +1,6 @@
 use bytemuck::{Pod, Zeroable};
 
-use crate::engine::core::types::{CHUNK_SIZE_U32, MAX_TEXTURE_LAYERS};
+use crate::engine::core::types::{CHUNK_SIZE_U32, CHUNK_VOLUME, MAX_TEXTURE_LAYERS};
 
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
@@ -68,6 +68,33 @@ pub struct DrawMeta {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
+pub struct DrawRef {
+    pub draw_meta_index: u32,
+    pub _pad: [u32; 3],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
+pub struct GpuDrawIndirect {
+    pub vertex_count: u32,
+    pub instance_count: u32,
+    pub first_vertex: u32,
+    pub first_instance: u32,
+}
+
+impl GpuDrawIndirect {
+    pub fn for_draw(draw_index: u32, instance_count: u32) -> Self {
+        Self {
+            vertex_count: 4,
+            instance_count,
+            first_vertex: 0,
+            first_instance: draw_index * CHUNK_VOLUME as u32,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
 pub struct BaseQuadVertex {
     pub uv: [f32; 2],
 }
@@ -80,6 +107,7 @@ pub enum DebugViewMode {
     FaceDir = 1,
     ChunkCoord = 2,
     DrawId = 3,
+    Wireframe = 4,
 }
 
 impl DebugViewMode {
@@ -89,6 +117,7 @@ impl DebugViewMode {
             Self::FaceDir => "FaceDir",
             Self::ChunkCoord => "ChunkCoord",
             Self::DrawId => "DrawId",
+            Self::Wireframe => "Wireframe",
         }
     }
 }
@@ -98,16 +127,16 @@ impl DebugViewMode {
 pub struct RenderSettingsUniform {
     pub debug_view_mode: u32,
     pub chunk_size: u32,
-    pub _pad0: u32,
+    pub draw_index_mode: u32,
     pub _pad1: u32,
 }
 
 impl RenderSettingsUniform {
-    pub fn new(debug_view_mode: DebugViewMode) -> Self {
+    pub fn new(debug_view_mode: DebugViewMode, draw_index_mode: u32) -> Self {
         Self {
             debug_view_mode: debug_view_mode as u32,
             chunk_size: CHUNK_SIZE_U32,
-            _pad0: 0,
+            draw_index_mode,
             _pad1: 0,
         }
     }

@@ -175,6 +175,8 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
                     Some(DebugViewMode::ChunkCoord)
                 } else if input.key_pressed(KeyCode::Digit4) {
                     Some(DebugViewMode::DrawId)
+                } else if input.key_pressed(KeyCode::Digit5) {
+                    Some(DebugViewMode::Wireframe)
                 } else {
                     None
                 };

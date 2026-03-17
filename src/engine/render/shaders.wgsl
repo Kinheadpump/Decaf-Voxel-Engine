@@ -15,7 +15,7 @@ struct Camera {
 struct RenderSettings {
     debug_view_mode: u32,
     chunk_size: u32,
-    _pad0: u32,
+    draw_index_mode: u32,
     _pad1: u32,
 };
 
@@ -25,6 +25,13 @@ struct DrawMeta {
     face_offset: u32,
     face_count: u32,
     draw_id: u32,
+};
+
+struct DrawRef {
+    draw_meta_index: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 };
 
 struct PackedFace {
@@ -38,9 +45,12 @@ var<uniform> camera: Camera;
 var<uniform> render_settings: RenderSettings;
 
 @group(1) @binding(0)
-var<uniform> draw_meta: DrawMeta;
+var<uniform> draw_ref: DrawRef;
 
 @group(1) @binding(1)
+var<storage, read> draw_metas: array<DrawMeta>;
+
+@group(1) @binding(2)
 var<storage, read> faces: array<PackedFace>;
 
 @group(2) @binding(0)
@@ -60,7 +70,29 @@ struct VsOut {
     @interpolate(flat)
     @location(1) tex_id: u32,
     @location(2) normal: vec3<f32>,
+    @interpolate(flat)
+    @location(3) draw_meta_index: u32,
 };
+
+fn chunk_volume() -> u32 {
+    return render_settings.chunk_size * render_settings.chunk_size * render_settings.chunk_size;
+}
+
+fn active_draw_meta_index(instance_index: u32) -> u32 {
+    if render_settings.draw_index_mode != 0u {
+        return instance_index / chunk_volume();
+    }
+
+    return draw_ref.draw_meta_index;
+}
+
+fn local_face_instance_index(instance_index: u32) -> u32 {
+    if render_settings.draw_index_mode != 0u {
+        return instance_index % chunk_volume();
+    }
+
+    return instance_index;
+}
 
 fn face_u_axis(dir: u32) -> vec3<f32> {
     switch dir {
@@ -133,7 +165,7 @@ fn hash_color_u32(x: u32) -> vec3<f32> {
     ) * 0.8 + vec3<f32>(0.2, 0.2, 0.2);
 }
 
-fn chunk_coord_color() -> vec3<f32> {
+fn chunk_coord_color(draw_meta: DrawMeta) -> vec3<f32> {
     let chunk_coord = draw_meta.chunk_origin.xyz / i32(render_settings.chunk_size);
     let seed =
         bitcast<u32>(chunk_coord.x * 73856093) ^
@@ -144,7 +176,10 @@ fn chunk_coord_color() -> vec3<f32> {
 
 @vertex
 fn vs_main(in: VsIn) -> VsOut {
-    let face = faces[draw_meta.face_offset + in.instance_index].value;
+    let draw_meta_index = active_draw_meta_index(in.instance_index);
+    let draw_meta = draw_metas[draw_meta_index];
+    let local_instance_index = local_face_instance_index(in.instance_index);
+    let face = faces[draw_meta.face_offset + local_instance_index].value;
 
     let x = f32((face >> 0u) & 0x1Fu);
     let y = f32((face >> 5u) & 0x1Fu);
@@ -177,15 +212,18 @@ fn vs_main(in: VsIn) -> VsOut {
     out.tex_uv = face_tex_uv(draw_meta.face_dir, in.uv, w, h);
     out.tex_id = tex_id;
     out.normal = normal;
+    out.draw_meta_index = draw_meta_index;
     return out;
 }
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    let draw_meta = draw_metas[in.draw_meta_index];
     switch render_settings.debug_view_mode {
         case 1u { return vec4<f32>(face_dir_color(draw_meta.face_dir), 1.0); }
-        case 2u { return vec4<f32>(chunk_coord_color(), 1.0); }
+        case 2u { return vec4<f32>(chunk_coord_color(draw_meta), 1.0); }
         case 3u { return vec4<f32>(hash_color_u32(draw_meta.draw_id), 1.0); }
+        case 4u { return vec4<f32>(0.98, 0.98, 0.98, 1.0); }
         default {}
     }
 
