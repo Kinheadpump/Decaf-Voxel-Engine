@@ -5,7 +5,7 @@ use crate::engine::{
         math::{IVec3, UVec3},
         types::CHUNK_SIZE,
     },
-    world::{chunk::Chunk, coord::ChunkCoord, voxel::Voxel},
+    world::{block::id::BlockId, chunk::Chunk, coord::ChunkCoord, voxel::Voxel},
 };
 
 pub struct World {
@@ -30,7 +30,11 @@ impl World {
         self.mark_dirty(coord);
     }
 
-    pub fn set_voxel_world(&mut self, p: IVec3, voxel: Voxel) -> bool {
+    pub fn set_block_world(&mut self, p: IVec3, block_id: BlockId) -> bool {
+        self.set_voxel_world(p, Voxel::from_block_id(block_id))
+    }
+
+    fn set_voxel_world(&mut self, p: IVec3, voxel: Voxel) -> bool {
         let coord = ChunkCoord::from_world_voxel(p);
         let local = coord.local_voxel(p);
 
@@ -101,7 +105,7 @@ mod tests {
         world.insert_chunk(east, Chunk::new());
         let _ = world.take_dirty();
 
-        assert!(world.set_voxel_world(IVec3::new((CHUNK_SIZE - 1) as i32, 0, 0), Voxel(1)));
+        assert!(world.set_block_world(IVec3::new((CHUNK_SIZE - 1) as i32, 0, 0), BlockId(1)));
 
         let dirty = world.take_dirty();
         assert!(dirty.contains(&center));
@@ -116,7 +120,7 @@ mod tests {
         world.insert_chunk(center, Chunk::new());
         let _ = world.take_dirty();
 
-        assert!(world.set_voxel_world(IVec3::new(4, 4, 4), Voxel(1)));
+        assert!(world.set_block_world(IVec3::new(4, 4, 4), BlockId(1)));
 
         let dirty = world.take_dirty();
         assert_eq!(dirty, vec![center]);

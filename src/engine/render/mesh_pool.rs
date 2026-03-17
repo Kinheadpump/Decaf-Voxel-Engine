@@ -8,7 +8,7 @@ pub struct GpuSlice {
 
 #[derive(Clone, Debug, Default)]
 pub struct ChunkGpuEntry {
-    pub dirs: [Option<GpuSlice>; 6],
+    pub faces: [[Option<GpuSlice>; 6]; 2],
 }
 
 pub struct MeshPool {

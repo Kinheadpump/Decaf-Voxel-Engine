@@ -1,6 +1,6 @@
 use bytemuck::{Pod, Zeroable};
 
-use crate::engine::core::types::CHUNK_SIZE_U32;
+use crate::engine::core::types::{CHUNK_SIZE_U32, MAX_TEXTURE_LAYERS};
 
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
@@ -11,29 +11,44 @@ impl PackedFace {
     // 0..=4   x
     // 5..=9   y
     // 10..=14 z
-    // 15..=21 block id (7 bits)
+    // 15..=21 texture layer id (7 bits)
     // 22..=26 width_minus_1
     // 27..=31 height_minus_1
-    pub fn pack(x: u32, y: u32, z: u32, block_id: u32, wm1: u32, hm1: u32) -> Self {
+    pub fn pack(x: u32, y: u32, z: u32, texture_id: u32, wm1: u32, hm1: u32) -> Self {
         debug_assert!(x < 32);
         debug_assert!(y < 32);
         debug_assert!(z < 32);
-        debug_assert!(block_id < 128);
+        debug_assert!(texture_id < MAX_TEXTURE_LAYERS);
         debug_assert!(wm1 < 32);
         debug_assert!(hm1 < 32);
 
-        Self((x << 0) | (y << 5) | (z << 10) | (block_id << 15) | (wm1 << 22) | (hm1 << 27))
+        Self((x << 0) | (y << 5) | (z << 10) | (texture_id << 15) | (wm1 << 22) | (hm1 << 27))
     }
 }
 
+#[repr(usize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RenderBucket {
+    #[default]
+    Opaque = 0,
+    Transparent = 1,
+}
+
+impl RenderBucket {
+    pub const ALL: [Self; 2] = [Self::Opaque, Self::Transparent];
+}
+
 pub struct ChunkMeshCpu {
-    pub faces: [Vec<PackedFace>; 6],
+    pub faces: [[Vec<PackedFace>; 6]; 2],
     pub source_generation: u32,
 }
 
 impl ChunkMeshCpu {
     pub fn new() -> Self {
-        Self { faces: std::array::from_fn(|_| Vec::new()), source_generation: 0 }
+        Self {
+            faces: std::array::from_fn(|_| std::array::from_fn(|_| Vec::new())),
+            source_generation: 0,
+        }
     }
 }
 
@@ -45,15 +60,6 @@ pub struct DrawMeta {
     pub face_offset: u32,
     pub face_count: u32,
     pub draw_id: u32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
-pub struct DrawIndirectArgs {
-    pub vertex_count: u32,
-    pub instance_count: u32,
-    pub first_vertex: u32,
-    pub first_instance: u32,
 }
 
 #[repr(C)]

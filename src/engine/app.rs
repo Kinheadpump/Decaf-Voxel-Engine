@@ -20,27 +20,33 @@ use crate::{
             controller::{Player, camera_from_player},
             physics::update_player,
         },
-        render::{gpu_types::DebugViewMode, renderer::Renderer},
+        render::{
+            gpu_types::DebugViewMode, materials::create_texture_registry, renderer::Renderer,
+        },
         world::{
+            block::{create_default_block_registry, resolved::ResolvedBlockRegistry},
             chunk::Chunk,
             coord::ChunkCoord,
             generator::{ChunkGenerator, FlatGenerator},
             storage::World,
         },
     },
+    logging,
 };
 
-pub async fn run() -> anyhow::Result<()> {
-    let config = Config::load();
+pub async fn run(config: Config) -> anyhow::Result<()> {
     let player_config = config.player.clone();
     let render_radius_xz = config.render.render_radius_xz.max(0);
     let render_radius_y = config.render.render_radius_y.max(0);
-
-    if config.debug.enable_profiler {
-        tracing::warn!(
-            "config.debug.enable_profiler is set, but no profiler integration is wired yet"
-        );
-    }
+    let block_registry = create_default_block_registry();
+    let texture_registry = create_texture_registry(&block_registry);
+    let resolved_blocks =
+        ResolvedBlockRegistry::build(&block_registry, texture_registry.layer_map());
+    let generator = FlatGenerator::new(
+        block_registry.must_get_id("grass"),
+        block_registry.must_get_id("dirt"),
+        block_registry.must_get_id("stone"),
+    );
 
     let event_loop = EventLoop::new()?;
     let window = Arc::new(
@@ -51,7 +57,6 @@ pub async fn run() -> anyhow::Result<()> {
     );
 
     let mut world = World::new();
-    let generator = FlatGenerator;
 
     for cz in -render_radius_xz..=render_radius_xz {
         for cy in -render_radius_y..=render_radius_y {
@@ -64,8 +69,8 @@ pub async fn run() -> anyhow::Result<()> {
         }
     }
 
-    let mut renderer = Renderer::new(window.clone()).await?;
-    renderer.rebuild_dirty_meshes(&mut world)?;
+    let mut renderer = Renderer::new(window.clone(), resolved_blocks, &texture_registry).await?;
+    renderer.finish_meshing(&mut world)?;
 
     let mut input = InputState::new();
     let mut player = Player::from_config(&player_config);
@@ -125,7 +130,7 @@ pub async fn run() -> anyhow::Result<()> {
 
                 if let Some(debug_mode) = debug_mode {
                     renderer.set_debug_view_mode(debug_mode);
-                    tracing::info!("Render debug view: {}", debug_mode.label());
+                    crate::log_info!("Render debug view: {}", debug_mode.label());
                     window.request_redraw();
                 }
             }
@@ -135,12 +140,26 @@ pub async fn run() -> anyhow::Result<()> {
                 let camera = camera_from_player(&player, aspect);
 
                 renderer.render(&camera).unwrap();
+                logging::frame_mark();
             }
         }
 
         Event::AboutToWait => {
+            if let Err(err) = renderer.pump_meshing(&mut world) {
+                crate::log_error!("failed to process chunk meshing jobs: {err:#}");
+                elwt.exit();
+                return;
+            }
+
             if input.cursor_grabbed {
-                update_player(&mut player, &input, &world, total_time, &player_config);
+                update_player(
+                    &mut player,
+                    &input,
+                    &world,
+                    &renderer.resolved_blocks,
+                    total_time,
+                    &player_config,
+                );
             }
 
             window.request_redraw();

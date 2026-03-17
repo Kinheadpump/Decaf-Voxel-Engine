@@ -2,8 +2,6 @@ pub struct DepthTarget {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
     pub format: wgpu::TextureFormat,
-    pub width: u32,
-    pub height: u32,
 }
 
 impl DepthTarget {
@@ -23,6 +21,10 @@ impl DepthTarget {
 
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        Self { texture, view, format, width, height }
+        Self { texture, view, format }
+    }
+
+    pub fn keep_alive(&self) -> &wgpu::Texture {
+        &self.texture
     }
 }

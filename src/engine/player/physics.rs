@@ -6,7 +6,7 @@ use crate::{
         core::math::{IVec3, Vec3},
         input::InputState,
         player::controller::{MovementMode, Player},
-        world::{accessor::VoxelAccessor, storage::World},
+        world::{accessor::VoxelAccessor, block::resolved::ResolvedBlockRegistry, storage::World},
     },
 };
 
@@ -14,22 +14,26 @@ pub fn update_player(
     player: &mut Player,
     input: &InputState,
     world: &World,
+    resolved_blocks: &ResolvedBlockRegistry,
     total_time: f32,
     config: &PlayerConfig,
 ) {
+    let _span = crate::profile_span!("player::update");
+    let accessor = VoxelAccessor { world };
+
     update_look(player, input, config);
     update_mode_toggles(player, input, total_time, config);
 
     match player.movement_mode {
-        MovementMode::Walking => update_walking(player, input, world, config),
-        MovementMode::Flying => update_flying(player, input, world, config),
+        MovementMode::Walking => update_walking(player, input, &accessor, resolved_blocks, config),
+        MovementMode::Flying => update_flying(player, input, &accessor, resolved_blocks, config),
     }
 }
 
 fn update_look(player: &mut Player, input: &InputState, config: &PlayerConfig) {
     let (dx, dy) = input.mouse_delta;
 
-    player.yaw -= dx * config.mouse_sensitivity;
+    player.yaw += dx * config.mouse_sensitivity;
     player.pitch -= dy * config.mouse_sensitivity;
 
     let max_pitch = std::f32::consts::FRAC_PI_2 - 0.001;
@@ -66,6 +70,11 @@ fn update_mode_toggles(
     }
 
     player.wants_jump_hold = input.key_held(KeyCode::Space);
+}
+
+#[inline]
+fn is_sprinting(input: &InputState) -> bool {
+    input.key_held(KeyCode::ShiftLeft) || input.key_held(KeyCode::ShiftRight)
 }
 
 fn movement_wish_dir_flat(player: &Player, input: &InputState) -> Vec3 {
@@ -156,11 +165,17 @@ fn apply_friction(vel: Vec3, friction: f32, dt: f32, horizontal_only: bool) -> V
     }
 }
 
-fn update_walking(player: &mut Player, input: &InputState, world: &World, config: &PlayerConfig) {
+fn update_walking(
+    player: &mut Player,
+    input: &InputState,
+    accessor: &VoxelAccessor,
+    resolved_blocks: &ResolvedBlockRegistry,
+    config: &PlayerConfig,
+) {
     let dt = input.dt;
 
     let wish_dir = movement_wish_dir_flat(player, input);
-    let sprint = input.key_held(KeyCode::ShiftLeft) || input.key_held(KeyCode::ShiftRight);
+    let sprint = is_sprinting(input);
     let max_speed =
         if sprint { config.walk_speed * config.walk_sprint_multiplier } else { config.walk_speed };
 
@@ -178,21 +193,27 @@ fn update_walking(player: &mut Player, input: &InputState, world: &World, config
         player.velocity.y -= config.gravity * dt;
     }
 
-    move_and_collide(player, world, dt, config.collision_steps);
+    move_and_collide(player, accessor, resolved_blocks, dt, config.collision_steps);
 }
 
-fn update_flying(player: &mut Player, input: &InputState, world: &World, config: &PlayerConfig) {
+fn update_flying(
+    player: &mut Player,
+    input: &InputState,
+    accessor: &VoxelAccessor,
+    resolved_blocks: &ResolvedBlockRegistry,
+    config: &PlayerConfig,
+) {
     let dt = input.dt;
 
     let wish_dir = movement_wish_dir_flying(player, input);
-    let sprint = input.key_held(KeyCode::ShiftLeft) || input.key_held(KeyCode::ShiftRight);
+    let sprint = is_sprinting(input);
     let max_speed =
         if sprint { config.fly_speed * config.fly_sprint_multiplier } else { config.fly_speed };
 
     player.velocity = apply_friction(player.velocity, config.fly_friction, dt, false);
     player.velocity = accelerate(player.velocity, wish_dir, max_speed, config.fly_accel, dt);
 
-    move_and_collide(player, world, dt, config.collision_steps);
+    move_and_collide(player, accessor, resolved_blocks, dt, config.collision_steps);
 }
 
 fn player_aabb(player: &Player, pos: Vec3) -> (Vec3, Vec3) {
@@ -201,12 +222,23 @@ fn player_aabb(player: &Player, pos: Vec3) -> (Vec3, Vec3) {
     (min, max)
 }
 
-fn is_solid_at_world(world: &World, wx: i32, wy: i32, wz: i32) -> bool {
-    let accessor = VoxelAccessor { world };
-    accessor.get_world_voxel(IVec3::new(wx, wy, wz)).is_solid()
+fn is_solid_at_world(
+    accessor: &VoxelAccessor,
+    resolved_blocks: &ResolvedBlockRegistry,
+    wx: i32,
+    wy: i32,
+    wz: i32,
+) -> bool {
+    let voxel = accessor.get_world_voxel(IVec3::new(wx, wy, wz));
+    resolved_blocks.get_voxel(voxel).is_solid()
 }
 
-fn collides_with_world(world: &World, min: Vec3, max: Vec3) -> bool {
+fn collides_with_world(
+    accessor: &VoxelAccessor,
+    resolved_blocks: &ResolvedBlockRegistry,
+    min: Vec3,
+    max: Vec3,
+) -> bool {
     let min_x = min.x.floor() as i32;
     let min_y = min.y.floor() as i32;
     let min_z = min.z.floor() as i32;
@@ -218,7 +250,7 @@ fn collides_with_world(world: &World, min: Vec3, max: Vec3) -> bool {
     for z in min_z..=max_z {
         for y in min_y..=max_y {
             for x in min_x..=max_x {
-                if is_solid_at_world(world, x, y, z) {
+                if is_solid_at_world(accessor, resolved_blocks, x, y, z) {
                     let voxel_min = Vec3::new(x as f32, y as f32, z as f32);
                     let voxel_max = voxel_min + Vec3::ONE;
 
@@ -242,7 +274,13 @@ fn aabb_intersects(a_min: Vec3, a_max: Vec3, b_min: Vec3, b_max: Vec3) -> bool {
         && a_max.z > b_min.z
 }
 
-fn move_and_collide(player: &mut Player, world: &World, dt: f32, collision_steps: usize) {
+fn move_and_collide(
+    player: &mut Player,
+    accessor: &VoxelAccessor,
+    resolved_blocks: &ResolvedBlockRegistry,
+    dt: f32,
+    collision_steps: usize,
+) {
     player.on_ground = false;
 
     let mut pos = player.position;
@@ -254,14 +292,14 @@ fn move_and_collide(player: &mut Player, world: &World, dt: f32, collision_steps
     for _ in 0..step_count {
         pos.x += vel.x * step_dt;
         let (min, max) = player_aabb(player, pos);
-        if collides_with_world(world, min, max) {
+        if collides_with_world(accessor, resolved_blocks, min, max) {
             pos.x -= vel.x * step_dt;
             vel.x = 0.0;
         }
 
         pos.y += vel.y * step_dt;
         let (min, max) = player_aabb(player, pos);
-        if collides_with_world(world, min, max) {
+        if collides_with_world(accessor, resolved_blocks, min, max) {
             pos.y -= vel.y * step_dt;
 
             if vel.y < 0.0 {
@@ -273,7 +311,7 @@ fn move_and_collide(player: &mut Player, world: &World, dt: f32, collision_steps
 
         pos.z += vel.z * step_dt;
         let (min, max) = player_aabb(player, pos);
-        if collides_with_world(world, min, max) {
+        if collides_with_world(accessor, resolved_blocks, min, max) {
             pos.z -= vel.z * step_dt;
             vel.z = 0.0;
         }
