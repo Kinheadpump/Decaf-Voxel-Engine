@@ -49,10 +49,10 @@ impl Drop for TracyProfiler {
     fn drop(&mut self) {
         let _ = &self.client;
 
+        // SAFETY: The profiler is started and shut down from the main thread.
+        // `RuntimeServices` lives in `main`, so it drops only after the app has returned
+        // and the renderer/threaded mesher have already been dropped and joined.
         unsafe {
-            // SAFETY: The profiler is started and shut down from the main thread.
-            // `RuntimeServices` lives in `main`, so it drops only after the app has returned
-            // and the renderer/threaded mesher have already been dropped and joined.
             tracy_client::sys::___tracy_shutdown_profiler();
         }
     }

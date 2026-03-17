@@ -65,10 +65,16 @@ impl Frustum {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::CameraConfig;
 
     #[test]
     fn aabb_inside_frustum_is_visible() {
-        let camera = Camera::new(Vec3::ZERO, Vec3::new(0.0, 0.0, -1.0), 1.0);
+        let camera = Camera::from_config(
+            Vec3::ZERO,
+            Vec3::new(0.0, 0.0, -1.0),
+            1.0,
+            &CameraConfig::default(),
+        );
         let frustum = Frustum::from_camera(&camera);
 
         assert!(frustum.test_aabb(Vec3::new(-1.0, -1.0, -6.0), Vec3::new(1.0, 1.0, -4.0),));
@@ -76,7 +82,12 @@ mod tests {
 
     #[test]
     fn aabb_behind_camera_is_rejected() {
-        let camera = Camera::new(Vec3::ZERO, Vec3::new(0.0, 0.0, -1.0), 1.0);
+        let camera = Camera::from_config(
+            Vec3::ZERO,
+            Vec3::new(0.0, 0.0, -1.0),
+            1.0,
+            &CameraConfig::default(),
+        );
         let frustum = Frustum::from_camera(&camera);
 
         assert!(!frustum.test_aabb(Vec3::new(-1.0, -1.0, 2.0), Vec3::new(1.0, 1.0, 4.0),));
@@ -84,7 +95,12 @@ mod tests {
 
     #[test]
     fn aabb_outside_side_plane_is_rejected() {
-        let camera = Camera::new(Vec3::ZERO, Vec3::new(0.0, 0.0, -1.0), 1.0);
+        let camera = Camera::from_config(
+            Vec3::ZERO,
+            Vec3::new(0.0, 0.0, -1.0),
+            1.0,
+            &CameraConfig::default(),
+        );
         let frustum = Frustum::from_camera(&camera);
 
         assert!(!frustum.test_aabb(Vec3::new(8.0, -1.0, -6.0), Vec3::new(10.0, 1.0, -4.0),));

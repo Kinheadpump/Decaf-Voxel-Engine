@@ -30,11 +30,6 @@ impl BlockBuilder {
         self
     }
 
-    pub fn emissive(mut self) -> Self {
-        self.flags |= BlockFlags::EMISSIVE;
-        self
-    }
-
     pub fn no_cull(mut self) -> Self {
         self.flags |= BlockFlags::NO_CULL;
         self
@@ -47,11 +42,6 @@ impl BlockBuilder {
 
     pub fn liquid(mut self) -> Self {
         self.flags |= BlockFlags::LIQUID;
-        self
-    }
-
-    pub fn climbable(mut self) -> Self {
-        self.flags |= BlockFlags::CLIMBABLE;
         self
     }
 

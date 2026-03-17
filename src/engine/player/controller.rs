@@ -1,5 +1,5 @@
 use crate::{
-    config::PlayerConfig,
+    config::{CameraConfig, PlayerConfig},
     engine::{core::math::Vec3, render::camera::Camera},
 };
 
@@ -101,6 +101,6 @@ impl Player {
     }
 }
 
-pub fn camera_from_player(player: &Player, aspect: f32) -> Camera {
-    Camera::new(player.eye_position(), player.forward_3d(), aspect)
+pub fn camera_from_player(player: &Player, aspect: f32, camera_config: &CameraConfig) -> Camera {
+    Camera::from_config(player.eye_position(), player.forward_3d(), aspect, camera_config)
 }

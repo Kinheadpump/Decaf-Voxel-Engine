@@ -3,7 +3,10 @@ use winit::keyboard::KeyCode;
 use crate::{
     config::PlayerConfig,
     engine::{
-        core::math::{IVec3, Vec3},
+        core::{
+            collision::aabb_intersects,
+            math::{IVec3, Vec3},
+        },
         input::InputState,
         player::controller::{MovementMode, Player},
         world::{accessor::VoxelAccessor, block::resolved::ResolvedBlockRegistry, storage::World},
@@ -77,7 +80,7 @@ fn is_sprinting(input: &InputState) -> bool {
     input.key_held(KeyCode::ShiftLeft) || input.key_held(KeyCode::ShiftRight)
 }
 
-fn movement_wish_dir_flat(player: &Player, input: &InputState) -> Vec3 {
+fn walking_move_direction(player: &Player, input: &InputState) -> Vec3 {
     let mut dir = Vec3::ZERO;
 
     if input.key_held(KeyCode::KeyW) {
@@ -96,7 +99,7 @@ fn movement_wish_dir_flat(player: &Player, input: &InputState) -> Vec3 {
     dir.normalize_or_zero()
 }
 
-fn movement_wish_dir_flying(player: &Player, input: &InputState) -> Vec3 {
+fn flying_move_direction(player: &Player, input: &InputState) -> Vec3 {
     let mut dir = Vec3::ZERO;
     let forward = player.forward_flat();
     let right = player.right_flat();
@@ -173,7 +176,7 @@ fn update_walking(
 ) {
     let dt = input.dt;
 
-    let wish_dir = movement_wish_dir_flat(player, input);
+    let wish_dir = walking_move_direction(player, input);
     let sprint = is_sprinting(input);
     let max_speed =
         if sprint { config.walk_speed * config.walk_sprint_multiplier } else { config.walk_speed };
@@ -204,7 +207,7 @@ fn update_flying(
 ) {
     let dt = input.dt;
 
-    let wish_dir = movement_wish_dir_flying(player, input);
+    let wish_dir = flying_move_direction(player, input);
     let sprint = is_sprinting(input);
     let max_speed =
         if sprint { config.fly_speed * config.fly_sprint_multiplier } else { config.fly_speed };
@@ -219,56 +222,6 @@ fn player_aabb(player: &Player, pos: Vec3) -> (Vec3, Vec3) {
     let mut moved_player = player.clone();
     moved_player.position = pos;
     moved_player.aabb()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::movement_wish_dir_flying;
-    use crate::{
-        config::PlayerConfig,
-        engine::{input::InputState, player::controller::Player},
-    };
-    use winit::keyboard::KeyCode;
-
-    fn test_player() -> Player {
-        Player::from_config(&PlayerConfig {
-            spawn_x: 0.0,
-            spawn_y: 0.0,
-            spawn_z: 0.0,
-            reach_distance: 6.0,
-            mouse_sensitivity: 0.0022,
-            eye_height: 1.62,
-            radius: 0.3,
-            height: 1.8,
-            double_tap_window: 0.25,
-            collision_steps: 3,
-            walk_speed: 5.0,
-            walk_sprint_multiplier: 1.8,
-            walk_accel: 45.0,
-            air_accel: 10.0,
-            ground_friction: 14.0,
-            air_friction: 1.0,
-            jump_speed: 8.5,
-            gravity: 24.0,
-            fly_speed: 7.0,
-            fly_sprint_multiplier: 2.5,
-            fly_accel: 24.0,
-            fly_friction: 10.0,
-        })
-    }
-
-    #[test]
-    fn flying_forward_stays_flat_when_looking_up() {
-        let mut player = test_player();
-        let mut input = InputState::new();
-
-        player.pitch = 1.0;
-        input.set_key_held_for_test(KeyCode::KeyW);
-
-        let wish_dir = movement_wish_dir_flying(&player, &input);
-
-        assert!(wish_dir.y.abs() <= f32::EPSILON);
-    }
 }
 
 fn is_solid_at_world(
@@ -312,15 +265,6 @@ fn collides_with_world(
     }
 
     false
-}
-
-fn aabb_intersects(a_min: Vec3, a_max: Vec3, b_min: Vec3, b_max: Vec3) -> bool {
-    a_min.x < b_max.x
-        && a_max.x > b_min.x
-        && a_min.y < b_max.y
-        && a_max.y > b_min.y
-        && a_min.z < b_max.z
-        && a_max.z > b_min.z
 }
 
 fn move_and_collide(
@@ -368,4 +312,32 @@ fn move_and_collide(
 
     player.position = pos;
     player.velocity = vel;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::flying_move_direction;
+    use crate::{
+        config::PlayerConfig,
+        engine::{input::InputState, player::controller::Player},
+    };
+    use winit::keyboard::KeyCode;
+
+    fn test_player() -> Player {
+        let config = PlayerConfig { spawn_y: 0.0, ..PlayerConfig::default() };
+        Player::from_config(&config)
+    }
+
+    #[test]
+    fn flying_forward_stays_flat_when_looking_up() {
+        let mut player = test_player();
+        let mut input = InputState::new();
+
+        player.pitch = 1.0;
+        input.set_key_held_for_test(KeyCode::KeyW);
+
+        let wish_dir = flying_move_direction(&player, &input);
+
+        assert!(wish_dir.y.abs() <= f32::EPSILON);
+    }
 }

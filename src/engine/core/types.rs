@@ -6,11 +6,6 @@ pub const CHUNK_SIZE_I32: i32 = 32;
 pub const CHUNK_VOLUME: usize = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE;
 
 pub const MAX_TEXTURE_LAYERS: u32 = 128;
-pub const MAX_VISIBLE_DRAWS: usize = 32_768;
-pub const INITIAL_FACE_CAPACITY: usize = 4_000_000;
-
-pub const WINDOW_WIDTH: u32 = 1280;
-pub const WINDOW_HEIGHT: u32 = 720;
 
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

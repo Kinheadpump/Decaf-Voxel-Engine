@@ -1,6 +1,8 @@
+mod fps;
+mod streaming;
+
 use std::sync::Arc;
 
-use ahash::AHashSet;
 use winit::{
     dpi::PhysicalSize,
     event::*,
@@ -12,10 +14,6 @@ use winit::{
 use crate::{
     config::Config,
     engine::{
-        core::{
-            math::IVec3,
-            types::{WINDOW_HEIGHT, WINDOW_WIDTH},
-        },
         input::InputState,
         player::{
             controller::{Player, camera_from_player},
@@ -25,59 +23,32 @@ use crate::{
         render::{
             gpu_types::{DebugOverlayInput, DebugViewMode},
             materials::create_texture_registry,
-            meshing::{MeshingFocus, sort_chunk_coords_by_priority},
             renderer::Renderer,
         },
         world::{
             block::{create_default_block_registry, resolved::ResolvedBlockRegistry},
-            chunk::Chunk,
-            coord::ChunkCoord,
-            generator::{ChunkGenerator, FlatGenerator},
+            generator::FlatGenerator,
             storage::World,
         },
     },
     logging,
 };
 
-struct FpsCounter {
-    accumulated_time: f32,
-    accumulated_frames: u32,
-    displayed_fps: u32,
-}
-
-impl FpsCounter {
-    fn new() -> Self {
-        Self { accumulated_time: 0.0, accumulated_frames: 0, displayed_fps: 0 }
-    }
-
-    fn sample(&mut self, dt: f32) {
-        if dt <= 0.0 {
-            return;
-        }
-
-        self.accumulated_time += dt;
-        self.accumulated_frames += 1;
-        self.displayed_fps = (self.accumulated_frames as f32
-            / self.accumulated_time.max(f32::EPSILON))
-        .round() as u32;
-
-        if self.accumulated_time >= 0.25 {
-            self.accumulated_time = 0.0;
-            self.accumulated_frames = 0;
-        }
-    }
-
-    fn displayed_fps(&self) -> u32 {
-        self.displayed_fps
-    }
-}
+use self::{
+    fps::FpsCounter,
+    streaming::{meshing_focus_from_player, stream_chunks_around_focus},
+};
 
 pub async fn run(config: Config) -> anyhow::Result<()> {
-    let player_config = config.player.clone();
-    let render_radius_xz = config.render.render_radius_xz.max(0);
-    let render_radius_y = config.render.render_radius_y.max(0);
-    let stream_generation_budget = config.render.stream_generation_budget;
-    let enable_hiz_occlusion = config.render.enable_hiz_occlusion;
+    let window_config = config.window;
+    let render_config = config.render.clone();
+    let player_config = config.player;
+    let world_config = config.world;
+
+    let render_radius_xz = render_config.render_radius_xz.max(0);
+    let render_radius_y = render_config.render_radius_y.max(0);
+    let stream_generation_budget = render_config.stream_generation_budget;
+
     let block_registry = create_default_block_registry();
     let stone_block_id = block_registry.must_get_id("stone");
     let texture_registry = create_texture_registry(&block_registry);
@@ -87,21 +58,23 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         block_registry.must_get_id("grass"),
         block_registry.must_get_id("dirt"),
         block_registry.must_get_id("stone"),
+        world_config.surface_level,
+        world_config.soil_depth,
     );
 
     let event_loop = EventLoop::new()?;
     let window = Arc::new(
         WindowBuilder::new()
             .with_title("Decaf")
-            .with_inner_size(PhysicalSize::new(WINDOW_WIDTH, WINDOW_HEIGHT))
+            .with_inner_size(PhysicalSize::new(window_config.width, window_config.height))
             .build(&event_loop)?,
     );
 
     let mut player = Player::from_config(&player_config);
-    let initial_focus = focus_from_player(&player);
+    let initial_focus = meshing_focus_from_player(&player);
     let mut world = World::new();
 
-    stream_chunks_around_player(
+    stream_chunks_around_focus(
         &mut world,
         None,
         &generator,
@@ -112,8 +85,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     );
 
     let mut renderer =
-        Renderer::new(window.clone(), resolved_blocks, &texture_registry, enable_hiz_occlusion)
-            .await?;
+        Renderer::new(window.clone(), resolved_blocks, &texture_registry, &render_config).await?;
     renderer.finish_meshing(&mut world, initial_focus)?;
 
     let mut input = InputState::new();
@@ -122,7 +94,6 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     let mut show_fps_overlay = false;
 
     grab_cursor(&window, &mut input);
-
     window.request_redraw();
 
     event_loop.run(move |event, elwt| match event {
@@ -189,10 +160,12 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             }
 
             if let WindowEvent::RedrawRequested = event {
-                let aspect = renderer.config.width as f32 / renderer.config.height as f32;
-                let camera = camera_from_player(&player, aspect);
+                let aspect =
+                    renderer.surface_config.width as f32 / renderer.surface_config.height as f32;
+                let camera = camera_from_player(&player, aspect, &render_config.camera);
                 let player_voxel = player.position.floor().as_ivec3();
-                let player_chunk = ChunkCoord::from_world_voxel(player_voxel).0;
+                let player_chunk =
+                    crate::engine::world::coord::ChunkCoord::from_world_voxel(player_voxel).0;
                 renderer.set_debug_overlay(show_fps_overlay.then_some(DebugOverlayInput {
                     fps: fps_counter.displayed_fps(),
                     loaded_chunks: world.chunks.len() as u32,
@@ -201,7 +174,12 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
                     player_facing: player.cardinal_facing(),
                 }));
 
-                renderer.render(&camera).unwrap();
+                if let Err(err) = renderer.render(&camera) {
+                    crate::log_error!("render failed: {err:#}");
+                    elwt.exit();
+                    return;
+                }
+
                 logging::frame_mark();
             }
         }
@@ -247,8 +225,8 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
                 }
             }
 
-            let focus = focus_from_player(&player);
-            stream_chunks_around_player(
+            let focus = meshing_focus_from_player(&player);
+            stream_chunks_around_focus(
                 &mut world,
                 Some(&mut renderer),
                 &generator,
@@ -286,75 +264,4 @@ fn release_cursor(window: &Window, input: &mut InputState) {
     let _ = window.set_cursor_grab(CursorGrabMode::None);
     window.set_cursor_visible(true);
     input.cursor_grabbed = false;
-}
-
-fn focus_from_player(player: &Player) -> MeshingFocus {
-    MeshingFocus::new(
-        ChunkCoord::from_world_voxel(player.position.floor().as_ivec3()),
-        player.forward_3d(),
-    )
-}
-
-fn stream_chunks_around_player(
-    world: &mut World,
-    mut renderer: Option<&mut Renderer>,
-    generator: &FlatGenerator,
-    focus: MeshingFocus,
-    render_radius_xz: i32,
-    render_radius_y: i32,
-    generation_budget: usize,
-) {
-    let mut desired = desired_chunk_coords(focus, render_radius_xz, render_radius_y);
-    let desired_set: AHashSet<_> = desired.iter().copied().collect();
-
-    let to_unload: Vec<_> =
-        world.chunks.keys().copied().filter(|coord| !desired_set.contains(coord)).collect();
-    let unloaded = to_unload.len();
-
-    for coord in to_unload {
-        world.remove_chunk(coord);
-        if let Some(renderer) = renderer.as_deref_mut() {
-            renderer.remove_chunk_mesh(coord);
-        }
-    }
-
-    let mut generated = 0usize;
-    let budget = if generation_budget == 0 { usize::MAX } else { generation_budget };
-
-    desired.retain(|coord| !world.contains_chunk(*coord));
-    for coord in desired.into_iter().take(budget) {
-        let mut chunk = Chunk::new();
-        generator.generate(coord, &mut chunk);
-        world.insert_chunk(coord, chunk);
-        generated += 1;
-    }
-
-    if generated > 0 || unloaded > 0 {
-        crate::log_debug!(
-            "Streaming world around {:?}: generated {}, unloaded {}, loaded {}",
-            focus.center.0,
-            generated,
-            unloaded,
-            world.chunks.len()
-        );
-    }
-}
-
-fn desired_chunk_coords(
-    focus: MeshingFocus,
-    render_radius_xz: i32,
-    render_radius_y: i32,
-) -> Vec<ChunkCoord> {
-    let mut coords = Vec::new();
-
-    for cz in -render_radius_xz..=render_radius_xz {
-        for cy in -render_radius_y..=render_radius_y {
-            for cx in -render_radius_xz..=render_radius_xz {
-                coords.push(ChunkCoord(focus.center.0 + IVec3::new(cx, cy, cz)));
-            }
-        }
-    }
-
-    sort_chunk_coords_by_priority(&mut coords, focus);
-    coords
 }

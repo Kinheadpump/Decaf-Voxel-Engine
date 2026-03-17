@@ -6,11 +6,11 @@ mod config;
 mod engine;
 mod logging;
 
-fn main() {
+fn main() -> anyhow::Result<()> {
     let config = config::Config::load();
     let _runtime_services = logging::init(&config.debug);
 
     crate::log_info!("Engine starting");
     crate::log_debug!("Runtime config loaded successfully");
-    pollster::block_on(engine::app::run(config)).unwrap();
+    pollster::block_on(engine::app::run(config))
 }

@@ -100,10 +100,11 @@ impl World {
     }
 
     fn mark_border_neighbors_dirty(&mut self, coord: ChunkCoord, local: UVec3) {
-        let maybe_mark = |delta: IVec3, neighbor_local: UVec3, this: &mut Self| {
+        let edge = (CHUNK_SIZE - 1) as u32;
+        let mark_if_loaded = |delta: IVec3, neighbor_local: UVec3, world: &mut Self| {
             let neighbor = coord.offset(delta);
-            if this.chunks.contains_key(&neighbor) {
-                this.mark_dirty_region(
+            if world.chunks.contains_key(&neighbor) {
+                world.mark_dirty_region(
                     neighbor,
                     ChunkMeshDirtyRegion::from_local_voxel(neighbor_local),
                 );
@@ -111,34 +112,22 @@ impl World {
         };
 
         if local.x == 0 {
-            maybe_mark(
-                IVec3::new(-1, 0, 0),
-                UVec3::new((CHUNK_SIZE - 1) as u32, local.y, local.z),
-                self,
-            );
+            mark_if_loaded(IVec3::new(-1, 0, 0), UVec3::new(edge, local.y, local.z), self);
         }
         if local.x as usize == CHUNK_SIZE - 1 {
-            maybe_mark(IVec3::new(1, 0, 0), UVec3::new(0, local.y, local.z), self);
+            mark_if_loaded(IVec3::new(1, 0, 0), UVec3::new(0, local.y, local.z), self);
         }
         if local.y == 0 {
-            maybe_mark(
-                IVec3::new(0, -1, 0),
-                UVec3::new(local.x, (CHUNK_SIZE - 1) as u32, local.z),
-                self,
-            );
+            mark_if_loaded(IVec3::new(0, -1, 0), UVec3::new(local.x, edge, local.z), self);
         }
         if local.y as usize == CHUNK_SIZE - 1 {
-            maybe_mark(IVec3::new(0, 1, 0), UVec3::new(local.x, 0, local.z), self);
+            mark_if_loaded(IVec3::new(0, 1, 0), UVec3::new(local.x, 0, local.z), self);
         }
         if local.z == 0 {
-            maybe_mark(
-                IVec3::new(0, 0, -1),
-                UVec3::new(local.x, local.y, (CHUNK_SIZE - 1) as u32),
-                self,
-            );
+            mark_if_loaded(IVec3::new(0, 0, -1), UVec3::new(local.x, local.y, edge), self);
         }
         if local.z as usize == CHUNK_SIZE - 1 {
-            maybe_mark(IVec3::new(0, 0, 1), UVec3::new(local.x, local.y, 0), self);
+            mark_if_loaded(IVec3::new(0, 0, 1), UVec3::new(local.x, local.y, 0), self);
         }
     }
 }

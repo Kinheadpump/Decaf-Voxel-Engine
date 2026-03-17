@@ -14,15 +14,28 @@ impl PackedFace {
     // 15..=21 texture layer id (7 bits)
     // 22..=26 width_minus_1
     // 27..=31 height_minus_1
-    pub fn pack(x: u32, y: u32, z: u32, texture_id: u32, wm1: u32, hm1: u32) -> Self {
+    pub fn pack(
+        x: u32,
+        y: u32,
+        z: u32,
+        texture_id: u32,
+        width_minus_one: u32,
+        height_minus_one: u32,
+    ) -> Self {
         debug_assert!(x < 32);
         debug_assert!(y < 32);
         debug_assert!(z < 32);
         debug_assert!(texture_id < MAX_TEXTURE_LAYERS);
-        debug_assert!(wm1 < 32);
-        debug_assert!(hm1 < 32);
+        debug_assert!(width_minus_one < 32);
+        debug_assert!(height_minus_one < 32);
 
-        Self((x << 0) | (y << 5) | (z << 10) | (texture_id << 15) | (wm1 << 22) | (hm1 << 27))
+        Self(
+            x | (y << 5)
+                | (z << 10)
+                | (texture_id << 15)
+                | (width_minus_one << 22)
+                | (height_minus_one << 27),
+        )
     }
 }
 

@@ -4,23 +4,16 @@ use bytemuck::{Pod, Zeroable};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use glam::{UVec2, Vec2, Vec4};
 
-use crate::engine::{
-    core::{
-        math::{Mat4, Vec3},
-        types::CHUNK_SIZE_I32,
+use crate::{
+    config::HiZOcclusionConfig,
+    engine::{
+        core::math::{Mat4, Vec3},
+        render::{camera::Camera, targets::DepthTarget},
     },
-    render::{camera::Camera, targets::DepthTarget},
 };
 
-const MAX_HIZ_BASE_DIMENSION: u32 = 256;
-const HIZ_READBACK_SLOTS: usize = 3;
-const MAX_HIZ_PASSES: usize = 16;
-const MAX_CAMERA_REUSE_DISTANCE: f32 = 8.0;
-const MIN_CAMERA_REUSE_FORWARD_DOT: f32 = 0.97;
-const NEAR_CHUNK_SKIP_DISTANCE: f32 = CHUNK_SIZE_I32 as f32 * 1.5;
-const OCCLUSION_DEPTH_BIAS: f32 = 1.0e-4;
-
 pub struct HiZOcclusion {
+    settings: HiZOcclusionConfig,
     texture: wgpu::Texture,
     views: Vec<wgpu::TextureView>,
     mip_sizes: Vec<UVec2>,
@@ -43,7 +36,12 @@ pub struct HiZOcclusion {
 }
 
 impl HiZOcclusion {
-    pub fn new(device: &wgpu::Device, surface_width: u32, surface_height: u32) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        surface_width: u32,
+        surface_height: u32,
+        settings: HiZOcclusionConfig,
+    ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("hiz_shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("hiz.wgsl").into()),
@@ -51,11 +49,10 @@ impl HiZOcclusion {
 
         let uniform_size = std::mem::size_of::<HiZPassUniform>() as u64;
         let uniform_alignment = device.limits().min_uniform_buffer_offset_alignment as u64;
-        let pass_uniform_stride =
-            ((uniform_size + uniform_alignment - 1) / uniform_alignment) * uniform_alignment;
+        let pass_uniform_stride = uniform_size.div_ceil(uniform_alignment) * uniform_alignment;
         let pass_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("hiz_pass_uniform_buffer"),
-            size: pass_uniform_stride * MAX_HIZ_PASSES as u64,
+            size: pass_uniform_stride * settings.max_passes as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -70,7 +67,7 @@ impl HiZOcclusion {
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: false,
-                            min_binding_size: Some(NonZeroU64::new(uniform_size).unwrap()),
+                            min_binding_size: Some(non_zero_u64(uniform_size, "hiz uniform size")),
                         },
                         count: None,
                     },
@@ -96,7 +93,7 @@ impl HiZOcclusion {
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: false,
-                            min_binding_size: Some(NonZeroU64::new(uniform_size).unwrap()),
+                            min_binding_size: Some(non_zero_u64(uniform_size, "hiz uniform size")),
                         },
                         count: None,
                     },
@@ -153,6 +150,7 @@ impl HiZOcclusion {
 
         let (ready_tx, ready_rx) = unbounded();
         let mut this = Self {
+            settings,
             texture: create_hiz_texture(device, UVec2::ONE, 1),
             views: Vec::new(),
             mip_sizes: Vec::new(),
@@ -182,7 +180,8 @@ impl HiZOcclusion {
     }
 
     pub fn resize(&mut self, device: &wgpu::Device, surface_width: u32, surface_height: u32) {
-        let base_size = base_hiz_size(surface_width, surface_height);
+        let base_size =
+            base_hiz_size(surface_width, surface_height, self.settings.max_base_dimension);
         let mip_sizes = build_mip_sizes(base_size);
         let mip_count = mip_sizes.len() as u32;
 
@@ -202,7 +201,7 @@ impl HiZOcclusion {
             })
             .collect();
         self.copy_layouts = build_copy_layouts(&mip_sizes);
-        self.readback_slots = (0..HIZ_READBACK_SLOTS)
+        self.readback_slots = (0..self.settings.readback_slots)
             .map(|_| ReadbackSlot {
                 buffer: device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("hiz_readback_buffer"),
@@ -253,17 +252,18 @@ impl HiZOcclusion {
         };
 
         if (camera.position - previous_camera.position).length_squared()
-            > MAX_CAMERA_REUSE_DISTANCE * MAX_CAMERA_REUSE_DISTANCE
+            > self.settings.max_camera_reuse_distance * self.settings.max_camera_reuse_distance
         {
             return false;
         }
 
-        if camera.forward.dot(previous_camera.forward) < MIN_CAMERA_REUSE_FORWARD_DOT {
+        if camera.forward.dot(previous_camera.forward) < self.settings.min_camera_reuse_forward_dot
+        {
             return false;
         }
 
         if distance_sq_to_aabb(camera.position, min, max)
-            < NEAR_CHUNK_SKIP_DISTANCE * NEAR_CHUNK_SKIP_DISTANCE
+            < self.settings.near_chunk_skip_distance * self.settings.near_chunk_skip_distance
         {
             return false;
         }
@@ -288,7 +288,7 @@ impl HiZOcclusion {
         }
 
         let min_depth = cpu_pyramid.min_depth(level, x0, y0, x1, y1);
-        min_depth > projected.nearest_depth + OCCLUSION_DEPTH_BIAS
+        min_depth > projected.nearest_depth + self.settings.occlusion_depth_bias
     }
 
     pub fn record(
@@ -308,11 +308,11 @@ impl HiZOcclusion {
 
         let pass_uniforms =
             build_pass_uniforms(UVec2::new(surface_width, surface_height), &self.mip_sizes);
-        if pass_uniforms.len() > MAX_HIZ_PASSES {
+        if pass_uniforms.len() > self.settings.max_passes {
             crate::log_warn!(
                 "Skipping Hi-Z update because {} passes exceed the configured {}-pass limit",
                 pass_uniforms.len(),
-                MAX_HIZ_PASSES
+                self.settings.max_passes
             );
             return None;
         }
@@ -335,9 +335,10 @@ impl HiZOcclusion {
                     resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                         buffer: &self.pass_uniform_buffer,
                         offset: 0,
-                        size: Some(
-                            NonZeroU64::new(std::mem::size_of::<HiZPassUniform>() as u64).unwrap(),
-                        ),
+                        size: Some(non_zero_u64(
+                            std::mem::size_of::<HiZPassUniform>() as u64,
+                            "hiz pass uniform binding size",
+                        )),
                     }),
                 },
                 wgpu::BindGroupEntry {
@@ -377,10 +378,10 @@ impl HiZOcclusion {
                         resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                             buffer: &self.pass_uniform_buffer,
                             offset: mip_level as u64 * self.pass_uniform_stride,
-                            size: Some(
-                                NonZeroU64::new(std::mem::size_of::<HiZPassUniform>() as u64)
-                                    .unwrap(),
-                            ),
+                            size: Some(non_zero_u64(
+                                std::mem::size_of::<HiZPassUniform>() as u64,
+                                "hiz pass uniform binding size",
+                            )),
                         }),
                     },
                     wgpu::BindGroupEntry {
@@ -620,13 +621,13 @@ fn create_hiz_pipeline(
     })
 }
 
-fn base_hiz_size(surface_width: u32, surface_height: u32) -> UVec2 {
+fn base_hiz_size(surface_width: u32, surface_height: u32, max_base_dimension: u32) -> UVec2 {
     let mut width = surface_width.max(1);
     let mut height = surface_height.max(1);
 
-    while width > MAX_HIZ_BASE_DIMENSION || height > MAX_HIZ_BASE_DIMENSION {
-        width = (width + 1) / 2;
-        height = (height + 1) / 2;
+    while width > max_base_dimension || height > max_base_dimension {
+        width = width.div_ceil(2);
+        height = height.div_ceil(2);
     }
 
     UVec2::new(width.max(1), height.max(1))
@@ -700,7 +701,11 @@ fn align_to(value: u64, alignment: u64) -> u64 {
         return value;
     }
 
-    ((value + alignment - 1) / alignment) * alignment
+    value.div_ceil(alignment) * alignment
+}
+
+fn non_zero_u64(value: u64, label: &str) -> NonZeroU64 {
+    NonZeroU64::new(value).unwrap_or_else(|| panic!("{label} must be non-zero"))
 }
 
 fn project_aabb(view_proj: Mat4, min: Vec3, max: Vec3) -> Option<ProjectedAabb> {
@@ -763,8 +768,9 @@ mod tests {
 
     #[test]
     fn surface_size_is_downscaled_for_hiz() {
-        assert_eq!(base_hiz_size(1280, 720), UVec2::new(160, 90));
-        assert_eq!(base_hiz_size(256, 144), UVec2::new(256, 144));
+        let settings = HiZOcclusionConfig::default();
+        assert_eq!(base_hiz_size(1280, 720, settings.max_base_dimension), UVec2::new(160, 90));
+        assert_eq!(base_hiz_size(256, 144, settings.max_base_dimension), UVec2::new(256, 144));
     }
 
     #[test]

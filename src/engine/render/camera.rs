@@ -1,6 +1,9 @@
 use bytemuck::{Pod, Zeroable};
 
-use crate::engine::core::math::{Mat4, Vec3};
+use crate::{
+    config::CameraConfig,
+    engine::core::math::{Mat4, Vec3},
+};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Camera {
@@ -13,14 +16,14 @@ pub struct Camera {
 }
 
 impl Camera {
-    pub fn new(position: Vec3, forward: Vec3, aspect: f32) -> Self {
+    pub fn from_config(position: Vec3, forward: Vec3, aspect: f32, config: &CameraConfig) -> Self {
         Self {
             position,
             forward: forward.normalize(),
             up: Vec3::Y,
             aspect,
-            fov_y_radians: 70.0_f32.to_radians(),
-            near_plane: 0.1,
+            fov_y_radians: config.fov_y_degrees.to_radians(),
+            near_plane: config.near_plane,
         }
     }
 
@@ -99,8 +102,10 @@ mod tests {
 
     #[test]
     fn reverse_z_maps_near_plane_to_one() {
-        let near = 0.1;
-        let proj = perspective_reverse_infinite_rh(70.0_f32.to_radians(), 16.0 / 9.0, near);
+        let config = CameraConfig::default();
+        let near = config.near_plane;
+        let proj =
+            perspective_reverse_infinite_rh(config.fov_y_degrees.to_radians(), 16.0 / 9.0, near);
         let clip = proj * Vec4::new(0.0, 0.0, -near, 1.0);
         let ndc_z = clip.z / clip.w;
 
@@ -109,7 +114,12 @@ mod tests {
 
     #[test]
     fn reverse_z_pushes_far_points_towards_zero() {
-        let proj = perspective_reverse_infinite_rh(70.0_f32.to_radians(), 16.0 / 9.0, 0.1);
+        let config = CameraConfig::default();
+        let proj = perspective_reverse_infinite_rh(
+            config.fov_y_degrees.to_radians(),
+            16.0 / 9.0,
+            config.near_plane,
+        );
         let clip = proj * Vec4::new(0.0, 0.0, -10_000.0, 1.0);
         let ndc_z = clip.z / clip.w;
 

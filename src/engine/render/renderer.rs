@@ -1,37 +1,47 @@
+mod draw;
+mod mesh_upload;
+mod overlay;
+mod pipelines;
+
 use std::{cmp::Ordering, num::NonZeroU64, sync::Arc};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
-use crate::engine::{
-    core::types::{CHUNK_SIZE_I32, INITIAL_FACE_CAPACITY, MAX_VISIBLE_DRAWS},
-    render::{
-        camera::{Camera, CameraUniform},
-        frustum::Frustum,
-        gpu_types::{
-            BaseQuadVertex, ChunkMeshCpu, DebugOverlayInput, DebugViewMode, DrawMeta, DrawRef,
-            GpuDrawIndirect, PackedFace, RenderBucket, RenderSettingsUniform, RenderStats,
-            TextGlyphInstance, TextOverlayUniform,
+use crate::{
+    config::{ClearColorConfig, OverlayConfig, RenderConfig},
+    engine::{
+        core::types::CHUNK_SIZE_I32,
+        render::{
+            camera::{Camera, CameraUniform},
+            frustum::Frustum,
+            gpu_types::{
+                BaseQuadVertex, DebugOverlayInput, DebugViewMode, DrawMeta, DrawRef,
+                GpuDrawIndirect, RenderBucket, RenderSettingsUniform, RenderStats,
+                TextGlyphInstance, TextOverlayUniform,
+            },
+            hiz::HiZOcclusion,
+            materials::{Materials, TextureRegistry},
+            mesh_pool::{ChunkGpuEntry, MeshPool},
+            meshing::{MeshingFocus, ThreadedMesher},
+            targets::DepthTarget,
         },
-        hiz::HiZOcclusion,
-        materials::{Materials, TextureRegistry},
-        mesh_pool::{ChunkGpuEntry, GpuSlice, MeshPool},
-        meshing::{MeshingFocus, ThreadedMesher},
-        targets::DepthTarget,
+        world::{block::resolved::ResolvedBlockRegistry, coord::ChunkCoord, storage::World},
     },
-    world::{block::resolved::ResolvedBlockRegistry, coord::ChunkCoord, storage::World},
 };
 
-const MAX_OVERLAY_GLYPHS: usize = 256;
-const OVERLAY_GLYPH_SIZE: [f32; 2] = [12.0, 15.0];
-const OVERLAY_PADDING_PX: [f32; 2] = [8.0, 8.0];
-const OVERLAY_GLYPH_ADVANCE_X: f32 = 13.0;
-const OVERLAY_LINE_ADVANCE_Y: f32 = 18.0;
+use self::{
+    draw::{
+        build_draw_ref_bytes, chunk_face_can_face_camera, next_face_capacity,
+        transparent_batch_center,
+    },
+    pipelines::{create_overlay_pipeline, create_voxel_pipeline, create_wireframe_pipeline},
+};
 
 pub struct Renderer {
     pub surface: wgpu::Surface<'static>,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
-    pub config: wgpu::SurfaceConfiguration,
+    pub surface_config: wgpu::SurfaceConfiguration,
 
     pub depth_target: DepthTarget,
 
@@ -62,11 +72,23 @@ pub struct Renderer {
     pub hiz_occlusion: Option<HiZOcclusion>,
     pub mesher: ThreadedMesher,
     pub resolved_blocks: ResolvedBlockRegistry,
-    pub materials: Materials,
+    pub _materials: Materials,
     pub debug_view_mode: DebugViewMode,
     pub debug_overlay: Option<DebugOverlayInput>,
     pub last_frame_stats: RenderStats,
     pub use_multi_draw_indirect: bool,
+    max_visible_draws: usize,
+    overlay_config: OverlayConfig,
+    clear_color: ClearColorConfig,
+    opaque_draw_scratch: Vec<DrawMeta>,
+    transparent_draw_scratch: Vec<(f32, DrawMeta)>,
+    staged_draw_scratch: Vec<DrawMeta>,
+    indirect_draw_scratch: Vec<GpuDrawIndirect>,
+    drawn_chunk_scratch: ahash::AHashSet<[i32; 3]>,
+}
+
+fn non_zero_u64(value: u64, label: &str) -> NonZeroU64 {
+    NonZeroU64::new(value).unwrap_or_else(|| panic!("{label} must be non-zero"))
 }
 
 impl Renderer {
@@ -74,7 +96,7 @@ impl Renderer {
         window: Arc<Window>,
         resolved_blocks: ResolvedBlockRegistry,
         texture_registry: &TextureRegistry,
-        enable_hiz_occlusion: bool,
+        render_config: &RenderConfig,
     ) -> anyhow::Result<Self> {
         let instance = wgpu::Instance::default();
         let size = window.inner_size();
@@ -121,7 +143,7 @@ impl Renderer {
         let caps = surface.get_capabilities(&adapter);
         let format = caps.formats[0];
 
-        let config = wgpu::SurfaceConfiguration {
+        let surface_config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
             width: size.width.max(1),
@@ -132,25 +154,32 @@ impl Renderer {
             desired_maximum_frame_latency: 2,
         };
 
-        surface.configure(&device, &config);
+        surface.configure(&device, &surface_config);
 
-        let depth_target = DepthTarget::create(&device, config.width, config.height);
-        let mesh_pool = MeshPool::new(&device, INITIAL_FACE_CAPACITY as u32);
-        let hiz_occlusion =
-            enable_hiz_occlusion.then(|| HiZOcclusion::new(&device, config.width, config.height));
+        let depth_target =
+            DepthTarget::create(&device, surface_config.width, surface_config.height);
+        let mesh_pool = MeshPool::new(&device, render_config.initial_face_capacity);
+        let hiz_occlusion = render_config.enable_hiz_occlusion.then(|| {
+            HiZOcclusion::new(
+                &device,
+                surface_config.width,
+                surface_config.height,
+                render_config.hiz,
+            )
+        });
         let draw_meta_size = std::mem::size_of::<DrawMeta>() as u32;
         let draw_ref_size = std::mem::size_of::<DrawRef>() as u32;
         let draw_ref_alignment = device.limits().min_uniform_buffer_offset_alignment;
-        let draw_ref_stride =
-            ((draw_ref_size + draw_ref_alignment - 1) / draw_ref_alignment) * draw_ref_alignment;
+        let draw_ref_stride = draw_ref_size.div_ceil(draw_ref_alignment) * draw_ref_alignment;
+        let max_visible_draws = render_config.max_visible_draws;
 
         let draw_meta_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("draw_meta_buffer"),
-            size: draw_meta_size as u64 * MAX_VISIBLE_DRAWS as u64,
+            size: draw_meta_size as u64 * max_visible_draws as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let draw_ref_bytes = build_draw_ref_bytes(MAX_VISIBLE_DRAWS, draw_ref_stride as usize);
+        let draw_ref_bytes = build_draw_ref_bytes(max_visible_draws, draw_ref_stride as usize);
         let draw_ref_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("draw_ref_buffer"),
             contents: &draw_ref_bytes,
@@ -158,7 +187,7 @@ impl Renderer {
         });
         let indirect_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("indirect_buffer"),
-            size: (MAX_VISIBLE_DRAWS * std::mem::size_of::<GpuDrawIndirect>()) as u64,
+            size: (max_visible_draws * std::mem::size_of::<GpuDrawIndirect>()) as u64,
             usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -184,7 +213,8 @@ impl Renderer {
 
         let overlay_instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("overlay_instance_buffer"),
-            size: (MAX_OVERLAY_GLYPHS * std::mem::size_of::<TextGlyphInstance>()) as u64,
+            size: (render_config.overlay.max_glyphs * std::mem::size_of::<TextGlyphInstance>())
+                as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -226,9 +256,10 @@ impl Renderer {
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
-                        min_binding_size: Some(
-                            NonZeroU64::new(std::mem::size_of::<CameraUniform>() as u64).unwrap(),
-                        ),
+                        min_binding_size: Some(non_zero_u64(
+                            std::mem::size_of::<CameraUniform>() as u64,
+                            "camera uniform size",
+                        )),
                     },
                     count: None,
                 },
@@ -238,10 +269,10 @@ impl Renderer {
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
-                        min_binding_size: Some(
-                            NonZeroU64::new(std::mem::size_of::<RenderSettingsUniform>() as u64)
-                                .unwrap(),
-                        ),
+                        min_binding_size: Some(non_zero_u64(
+                            std::mem::size_of::<RenderSettingsUniform>() as u64,
+                            "render settings uniform size",
+                        )),
                     },
                     count: None,
                 },
@@ -258,7 +289,10 @@ impl Renderer {
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: true,
-                            min_binding_size: Some(NonZeroU64::new(draw_ref_size as u64).unwrap()),
+                            min_binding_size: Some(non_zero_u64(
+                                draw_ref_size as u64,
+                                "draw reference uniform size",
+                            )),
                         },
                         count: None,
                     },
@@ -268,7 +302,10 @@ impl Renderer {
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Storage { read_only: true },
                             has_dynamic_offset: false,
-                            min_binding_size: Some(NonZeroU64::new(draw_meta_size as u64).unwrap()),
+                            min_binding_size: Some(non_zero_u64(
+                                draw_meta_size as u64,
+                                "draw metadata buffer size",
+                            )),
                         },
                         count: None,
                     },
@@ -315,9 +352,10 @@ impl Renderer {
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
-                    min_binding_size: Some(
-                        NonZeroU64::new(std::mem::size_of::<TextOverlayUniform>() as u64).unwrap(),
-                    ),
+                    min_binding_size: Some(non_zero_u64(
+                        std::mem::size_of::<TextOverlayUniform>() as u64,
+                        "text overlay uniform size",
+                    )),
                 },
                 count: None,
             }],
@@ -344,7 +382,10 @@ impl Renderer {
                     resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                         buffer: &draw_ref_buffer,
                         offset: 0,
-                        size: Some(NonZeroU64::new(draw_ref_size as u64).unwrap()),
+                        size: Some(non_zero_u64(
+                            draw_ref_size as u64,
+                            "draw reference binding size",
+                        )),
                     }),
                 },
                 wgpu::BindGroupEntry { binding: 1, resource: draw_meta_buffer.as_entire_binding() },
@@ -404,7 +445,7 @@ impl Renderer {
             &device,
             &pipeline_layout,
             &shader,
-            config.format,
+            surface_config.format,
             depth_target.format,
             Some(wgpu::BlendState::REPLACE),
             true,
@@ -415,7 +456,7 @@ impl Renderer {
             &device,
             &pipeline_layout,
             &shader,
-            config.format,
+            surface_config.format,
             depth_target.format,
             Some(wgpu::BlendState::ALPHA_BLENDING),
             false,
@@ -425,14 +466,14 @@ impl Renderer {
             &device,
             &pipeline_layout,
             &shader,
-            config.format,
+            surface_config.format,
             depth_target.format,
         );
         let overlay_pipeline = create_overlay_pipeline(
             &device,
             &overlay_pipeline_layout,
             &overlay_shader,
-            config.format,
+            surface_config.format,
             depth_target.format,
         );
 
@@ -446,7 +487,7 @@ impl Renderer {
             surface,
             device,
             queue,
-            config,
+            surface_config,
             depth_target,
             mesh_pool,
             gpu_entries: ahash::AHashMap::new(),
@@ -472,14 +513,22 @@ impl Renderer {
             hiz_occlusion,
             mesher,
             resolved_blocks,
-            materials,
+            _materials: materials,
             debug_view_mode: DebugViewMode::Shaded,
             debug_overlay: None,
             last_frame_stats: RenderStats {
-                hiz_enabled: enable_hiz_occlusion,
+                hiz_enabled: render_config.enable_hiz_occlusion,
                 ..Default::default()
             },
             use_multi_draw_indirect,
+            max_visible_draws,
+            overlay_config: render_config.overlay,
+            clear_color: render_config.clear_color,
+            opaque_draw_scratch: Vec::new(),
+            transparent_draw_scratch: Vec::new(),
+            staged_draw_scratch: Vec::new(),
+            indirect_draw_scratch: Vec::new(),
+            drawn_chunk_scratch: ahash::AHashSet::new(),
         })
     }
 
@@ -492,13 +541,20 @@ impl Renderer {
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
-        self.config.width = width.max(1);
-        self.config.height = height.max(1);
-        self.surface.configure(&self.device, &self.config);
-        self.depth_target =
-            DepthTarget::create(&self.device, self.config.width, self.config.height);
+        self.surface_config.width = width.max(1);
+        self.surface_config.height = height.max(1);
+        self.surface.configure(&self.device, &self.surface_config);
+        self.depth_target = DepthTarget::create(
+            &self.device,
+            self.surface_config.width,
+            self.surface_config.height,
+        );
         if let Some(hiz_occlusion) = &mut self.hiz_occlusion {
-            hiz_occlusion.resize(&self.device, self.config.width, self.config.height);
+            hiz_occlusion.resize(
+                &self.device,
+                self.surface_config.width,
+                self.surface_config.height,
+            );
         }
     }
 
@@ -536,261 +592,20 @@ impl Renderer {
         }
     }
 
-    fn upload_chunk_mesh(&mut self, coord: ChunkCoord, mesh: ChunkMeshCpu) -> anyhow::Result<()> {
-        if let Some(old_entry) = self.gpu_entries.remove(&coord) {
-            self.free_gpu_entry(&old_entry);
-        }
-
-        let required_faces = mesh.face_count();
-        let mut new_entry = if let Some(new_entry) = self.try_allocate_mesh_entry(&mesh)? {
-            new_entry
-        } else {
-            self.ensure_mesh_capacity(self.live_face_count() + required_faces)?;
-            self.try_allocate_mesh_entry(&mesh)?.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "face buffer exhausted after repack (capacity {} faces, required {})",
-                    self.mesh_pool.capacity_faces,
-                    self.live_face_count() + required_faces
-                )
-            })?
-        };
-
-        self.gpu_entries.insert(coord, std::mem::take(&mut new_entry));
-        Ok(())
-    }
-
-    fn try_allocate_mesh_entry(
-        &mut self,
-        mesh: &ChunkMeshCpu,
-    ) -> anyhow::Result<Option<ChunkGpuEntry>> {
-        let mut new_entry = ChunkGpuEntry::default();
-        let mut allocated = Vec::new();
-
-        for bucket in RenderBucket::ALL {
-            for dir in 0..6usize {
-                let faces = &mesh.faces[bucket as usize][dir];
-                if faces.is_empty() {
-                    continue;
-                }
-
-                let count = faces.len() as u32;
-                let Some(offset) = self.mesh_pool.alloc(count) else {
-                    for (offset, count) in allocated.drain(..) {
-                        self.mesh_pool.free(offset, count);
-                    }
-                    return Ok(None);
-                };
-
-                self.queue.write_buffer(
-                    &self.mesh_pool.face_buffer,
-                    offset as u64 * std::mem::size_of::<PackedFace>() as u64,
-                    bytemuck::cast_slice(faces),
-                );
-
-                new_entry.faces[bucket as usize][dir] = Some(GpuSlice { offset, count });
-                allocated.push((offset, count));
-            }
-        }
-
-        Ok(Some(new_entry))
-    }
-
-    fn free_gpu_entry(&mut self, entry: &ChunkGpuEntry) {
-        for bucket in RenderBucket::ALL {
-            for maybe in entry.faces[bucket as usize].into_iter().flatten() {
-                self.mesh_pool.free(maybe.offset, maybe.count);
-            }
-        }
-    }
-
-    fn live_face_count(&self) -> u32 {
-        self.gpu_entries
-            .values()
-            .flat_map(|entry| entry.faces.iter())
-            .flat_map(|dirs| dirs.iter())
-            .flatten()
-            .map(|slice| slice.count)
-            .sum()
-    }
-
-    fn ensure_mesh_capacity(&mut self, required_faces: u32) -> anyhow::Result<()> {
-        let _span = crate::profile_span!("renderer::ensure_mesh_capacity");
-        let current_capacity = self.mesh_pool.capacity_faces;
-        let target_capacity = next_face_capacity(current_capacity, required_faces);
-
-        if target_capacity > current_capacity {
-            crate::log_info!(
-                "Growing face buffer from {} to {} faces",
-                current_capacity,
-                target_capacity
-            );
-        } else {
-            crate::log_debug!(
-                "Repacking face buffer at {} faces ({} faces free) to recover contiguous space",
-                current_capacity,
-                self.mesh_pool.total_free_faces()
-            );
-        }
-
-        self.repack_mesh_pool(target_capacity)
-    }
-
-    fn repack_mesh_pool(&mut self, target_capacity: u32) -> anyhow::Result<()> {
-        let live_faces = self.live_face_count();
-        anyhow::ensure!(
-            target_capacity >= live_faces,
-            "repack target capacity {} is smaller than {} live faces",
-            target_capacity,
-            live_faces
-        );
-
-        let old_buffer = &self.mesh_pool.face_buffer;
-        let mut new_pool = MeshPool::new(&self.device, target_capacity);
-        let mut new_entries = ahash::AHashMap::with_capacity(self.gpu_entries.len());
-        let mut coords: Vec<_> = self.gpu_entries.keys().copied().collect();
-        coords.sort_by_key(|coord| (coord.0.x, coord.0.y, coord.0.z));
-
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("mesh_pool_repack_encoder"),
-        });
-        let face_size = std::mem::size_of::<PackedFace>() as u64;
-
-        for coord in coords {
-            let old_entry = self.gpu_entries.get(&coord).cloned().ok_or_else(|| {
-                anyhow::anyhow!("missing GPU entry for chunk during mesh pool repack")
-            })?;
-            let mut new_entry = ChunkGpuEntry::default();
-
-            for bucket in RenderBucket::ALL {
-                for dir in 0..6usize {
-                    let Some(old_slice) = old_entry.faces[bucket as usize][dir] else {
-                        continue;
-                    };
-
-                    let new_offset = new_pool.alloc(old_slice.count).ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "mesh pool repack ran out of space at capacity {} faces",
-                            target_capacity
-                        )
-                    })?;
-
-                    encoder.copy_buffer_to_buffer(
-                        old_buffer,
-                        old_slice.offset as u64 * face_size,
-                        &new_pool.face_buffer,
-                        new_offset as u64 * face_size,
-                        old_slice.count as u64 * face_size,
-                    );
-
-                    new_entry.faces[bucket as usize][dir] =
-                        Some(GpuSlice { offset: new_offset, count: old_slice.count });
-                }
-            }
-
-            new_entries.insert(coord, new_entry);
-        }
-
-        self.queue.submit(Some(encoder.finish()));
-        self.mesh_pool = new_pool;
-        self.gpu_entries = new_entries;
-        self.rebuild_scene_bind_group();
-        Ok(())
-    }
-
-    fn rebuild_scene_bind_group(&mut self) {
-        let draw_ref_size = std::mem::size_of::<DrawRef>() as u64;
-
-        self.scene_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("scene_bg"),
-            layout: &self.scene_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &self.draw_ref_buffer,
-                        offset: 0,
-                        size: Some(NonZeroU64::new(draw_ref_size).unwrap()),
-                    }),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: self.draw_meta_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: self.mesh_pool.face_buffer.as_entire_binding(),
-                },
-            ],
-        });
-    }
-
-    fn build_overlay_instances(&self, stats: RenderStats) -> Vec<TextGlyphInstance> {
-        let Some(debug_overlay) = self.debug_overlay else {
-            return Vec::new();
-        };
-
-        let mode_label = self.debug_view_mode.label().to_ascii_uppercase();
-        let hiz_label = if stats.hiz_enabled { "ON" } else { "OFF" };
-        let lines = [
-            format!("FPS: {}", debug_overlay.fps),
-            format!(
-                "POS: {} {} {}",
-                debug_overlay.player_voxel[0],
-                debug_overlay.player_voxel[1],
-                debug_overlay.player_voxel[2]
-            ),
-            format!(
-                "CHK: {} {} {}",
-                debug_overlay.player_chunk[0],
-                debug_overlay.player_chunk[1],
-                debug_overlay.player_chunk[2]
-            ),
-            format!("FACING: {}", debug_overlay.player_facing),
-            format!("WORLD: {}", stats.loaded_chunks),
-            format!("GPU: {}", stats.gpu_chunks),
-            format!("DRAWN: {}", stats.drawn_chunks),
-            format!("FRUSTUM: {}", stats.frustum_culled_chunks),
-            format!("OCCLUDED: {}", stats.occlusion_culled_chunks),
-            format!("DIR: {}", stats.directional_culled_draws),
-            format!("OPAQUE: {}", stats.opaque_draws),
-            format!("TRANS: {}", stats.transparent_draws),
-            format!("MESH: {}", stats.meshing_pending_chunks),
-            format!("HIZ: {hiz_label}"),
-            format!("MODE: {mode_label}"),
-        ];
-        let mut instances = Vec::with_capacity(MAX_OVERLAY_GLYPHS.min(lines.len() * 16));
-
-        'lines: for (line_index, line) in lines.iter().enumerate() {
-            for (column_index, ch) in line.chars().enumerate() {
-                if instances.len() >= MAX_OVERLAY_GLYPHS {
-                    break 'lines;
-                }
-
-                let ch = ch.to_ascii_uppercase();
-                if !overlay_supports_char(ch) {
-                    continue;
-                }
-
-                instances.push(TextGlyphInstance {
-                    origin_px: [
-                        OVERLAY_PADDING_PX[0] + column_index as f32 * OVERLAY_GLYPH_ADVANCE_X,
-                        OVERLAY_PADDING_PX[1] + line_index as f32 * OVERLAY_LINE_ADVANCE_Y,
-                    ],
-                    size_px: OVERLAY_GLYPH_SIZE,
-                    glyph_code: ch as u32,
-                    _pad: [0; 3],
-                });
-            }
-        }
-
-        instances
-    }
-
     pub fn render(&mut self, camera: &Camera) -> anyhow::Result<()> {
         let _span = crate::profile_span!("renderer::render");
 
-        let _ = self.materials.keep_alive();
-        let _ = self.depth_target.keep_alive();
+        let mut opaque_draws = std::mem::take(&mut self.opaque_draw_scratch);
+        opaque_draws.clear();
+        let mut transparent_draws = std::mem::take(&mut self.transparent_draw_scratch);
+        transparent_draws.clear();
+        let mut staged_draws = std::mem::take(&mut self.staged_draw_scratch);
+        staged_draws.clear();
+        let mut indirect_draws = std::mem::take(&mut self.indirect_draw_scratch);
+        indirect_draws.clear();
+        let mut drawn_chunk_origins = std::mem::take(&mut self.drawn_chunk_scratch);
+        drawn_chunk_origins.clear();
+
         if let Some(hiz_occlusion) = &mut self.hiz_occlusion {
             hiz_occlusion.update_readback(&self.device);
         }
@@ -812,8 +627,6 @@ impl Renderer {
         );
 
         let frustum = Frustum::from_camera(camera);
-        let mut opaque_draws = Vec::<DrawMeta>::with_capacity(4096);
-        let mut transparent_draws = Vec::<(f32, DrawMeta)>::with_capacity(2048);
         let mut frustum_culled_chunks = 0u32;
         let mut occlusion_culled_chunks = 0u32;
         let mut directional_culled_draws = 0u32;
@@ -840,45 +653,43 @@ impl Renderer {
             for dir in 0..6usize {
                 let faces_camera =
                     chunk_face_can_face_camera(camera.position, min, max, dir as u32);
-                if let Some(slice) = entry.faces[RenderBucket::Opaque as usize][dir] {
-                    if slice.count > 0 {
-                        if !faces_camera {
-                            directional_culled_draws += 1;
-                            continue;
-                        }
-                        opaque_draws.push(DrawMeta {
+
+                if let Some(slice) = entry.faces[RenderBucket::Opaque as usize][dir]
+                    && slice.count > 0
+                {
+                    if !faces_camera {
+                        directional_culled_draws += 1;
+                        continue;
+                    }
+
+                    opaque_draws.push(DrawMeta {
+                        chunk_origin: [origin.x, origin.y, origin.z, 0],
+                        face_dir: dir as u32,
+                        face_offset: slice.offset,
+                        face_count: slice.count,
+                        draw_id: 0,
+                    });
+                }
+                if let Some(slice) = entry.faces[RenderBucket::Transparent as usize][dir]
+                    && slice.count > 0
+                {
+                    if !faces_camera {
+                        directional_culled_draws += 1;
+                        continue;
+                    }
+
+                    let batch_center = transparent_batch_center(origin, dir as u32);
+                    let distance_sq = (batch_center - camera.position).length_squared();
+                    transparent_draws.push((
+                        distance_sq,
+                        DrawMeta {
                             chunk_origin: [origin.x, origin.y, origin.z, 0],
                             face_dir: dir as u32,
                             face_offset: slice.offset,
                             face_count: slice.count,
                             draw_id: 0,
-                        });
-                    }
-                }
-            }
-
-            for dir in 0..6usize {
-                let faces_camera =
-                    chunk_face_can_face_camera(camera.position, min, max, dir as u32);
-                if let Some(slice) = entry.faces[RenderBucket::Transparent as usize][dir] {
-                    if slice.count > 0 {
-                        if !faces_camera {
-                            directional_culled_draws += 1;
-                            continue;
-                        }
-                        let batch_center = transparent_batch_center(origin, dir as u32);
-                        let distance_sq = (batch_center - camera.position).length_squared();
-                        transparent_draws.push((
-                            distance_sq,
-                            DrawMeta {
-                                chunk_origin: [origin.x, origin.y, origin.z, 0],
-                                face_dir: dir as u32,
-                                face_offset: slice.offset,
-                                face_count: slice.count,
-                                draw_id: 0,
-                            },
-                        ));
-                    }
+                        },
+                    ));
                 }
             }
         }
@@ -888,22 +699,24 @@ impl Renderer {
         });
         transparent_draws.sort_by(|(a, _), (b, _)| b.partial_cmp(a).unwrap_or(Ordering::Equal));
 
-        if opaque_draws.len() > MAX_VISIBLE_DRAWS {
-            opaque_draws.truncate(MAX_VISIBLE_DRAWS);
+        if opaque_draws.len() > self.max_visible_draws {
+            opaque_draws.truncate(self.max_visible_draws);
             transparent_draws.clear();
         } else {
-            transparent_draws.truncate(MAX_VISIBLE_DRAWS - opaque_draws.len());
+            transparent_draws.truncate(self.max_visible_draws - opaque_draws.len());
         }
 
         let opaque_count = opaque_draws.len();
-        let mut staged_draws = Vec::with_capacity(opaque_count + transparent_draws.len());
-        staged_draws.extend(opaque_draws);
-        staged_draws.extend(transparent_draws.into_iter().map(|(_, draw)| draw));
-        let drawn_chunks = staged_draws
-            .iter()
-            .map(|draw| [draw.chunk_origin[0], draw.chunk_origin[1], draw.chunk_origin[2]])
-            .collect::<ahash::AHashSet<_>>()
-            .len() as u32;
+        staged_draws.append(&mut opaque_draws);
+        staged_draws.extend(transparent_draws.drain(..).map(|(_, draw)| draw));
+        for draw in &staged_draws {
+            drawn_chunk_origins.insert([
+                draw.chunk_origin[0],
+                draw.chunk_origin[1],
+                draw.chunk_origin[2],
+            ]);
+        }
+        let drawn_chunks = drawn_chunk_origins.len() as u32;
 
         for (draw_id, draw) in staged_draws.iter_mut().enumerate() {
             draw.draw_id = draw_id as u32;
@@ -916,13 +729,9 @@ impl Renderer {
             self.use_multi_draw_indirect && self.debug_view_mode != DebugViewMode::Wireframe;
 
         if use_indirect_draws && !staged_draws.is_empty() {
-            let indirect_draws: Vec<_> = staged_draws
-                .iter()
-                .enumerate()
-                .map(|(draw_index, draw)| {
-                    GpuDrawIndirect::for_draw(draw_index as u32, draw.face_count)
-                })
-                .collect();
+            indirect_draws.extend(staged_draws.iter().enumerate().map(|(draw_index, draw)| {
+                GpuDrawIndirect::for_draw(draw_index as u32, draw.face_count)
+            }));
             self.queue.write_buffer(
                 &self.indirect_buffer,
                 0,
@@ -952,7 +761,7 @@ impl Renderer {
             &self.overlay_uniform_buffer,
             0,
             bytemuck::bytes_of(&TextOverlayUniform {
-                screen_size: [self.config.width as f32, self.config.height as f32],
+                screen_size: [self.surface_config.width as f32, self.surface_config.height as f32],
                 _pad: [0.0; 2],
             }),
         );
@@ -979,9 +788,9 @@ impl Renderer {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.45,
-                            g: 0.70,
-                            b: 0.95,
+                            r: self.clear_color.r,
+                            g: self.clear_color.g,
+                            b: self.clear_color.b,
                             a: 1.0,
                         }),
                         store: wgpu::StoreOp::Store,
@@ -1060,8 +869,8 @@ impl Renderer {
                 &self.queue,
                 &mut encoder,
                 &self.depth_target,
-                self.config.width,
-                self.config.height,
+                self.surface_config.width,
+                self.surface_config.height,
             )
         });
 
@@ -1075,298 +884,13 @@ impl Renderer {
             hiz_occlusion.finish_frame(camera);
         }
         frame.present();
+
+        self.opaque_draw_scratch = opaque_draws;
+        self.transparent_draw_scratch = transparent_draws;
+        self.staged_draw_scratch = staged_draws;
+        self.indirect_draw_scratch = indirect_draws;
+        self.drawn_chunk_scratch = drawn_chunk_origins;
+
         Ok(())
-    }
-}
-
-fn create_voxel_pipeline(
-    device: &wgpu::Device,
-    pipeline_layout: &wgpu::PipelineLayout,
-    shader: &wgpu::ShaderModule,
-    color_format: wgpu::TextureFormat,
-    depth_format: wgpu::TextureFormat,
-    blend: Option<wgpu::BlendState>,
-    depth_write_enabled: bool,
-    label: &'static str,
-) -> wgpu::RenderPipeline {
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some(label),
-        layout: Some(pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: shader,
-            entry_point: "vs_main",
-            buffers: &[wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<BaseQuadVertex>() as u64,
-                step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &wgpu::vertex_attr_array![0 => Float32x2],
-            }],
-            compilation_options: Default::default(),
-        },
-        fragment: Some(wgpu::FragmentState {
-            module: shader,
-            entry_point: "fs_main",
-            targets: &[Some(wgpu::ColorTargetState {
-                format: color_format,
-                blend,
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-            compilation_options: Default::default(),
-        }),
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleStrip,
-            strip_index_format: None,
-            front_face: wgpu::FrontFace::Ccw,
-            cull_mode: Some(wgpu::Face::Back),
-            unclipped_depth: false,
-            polygon_mode: wgpu::PolygonMode::Fill,
-            conservative: false,
-        },
-        depth_stencil: Some(wgpu::DepthStencilState {
-            format: depth_format,
-            depth_write_enabled,
-            depth_compare: wgpu::CompareFunction::Greater,
-            stencil: wgpu::StencilState::default(),
-            bias: wgpu::DepthBiasState::default(),
-        }),
-        multisample: wgpu::MultisampleState::default(),
-        multiview: None,
-    })
-}
-
-fn create_wireframe_pipeline(
-    device: &wgpu::Device,
-    pipeline_layout: &wgpu::PipelineLayout,
-    shader: &wgpu::ShaderModule,
-    color_format: wgpu::TextureFormat,
-    depth_format: wgpu::TextureFormat,
-) -> wgpu::RenderPipeline {
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("voxel_wireframe_pipeline"),
-        layout: Some(pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: shader,
-            entry_point: "vs_main",
-            buffers: &[wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<BaseQuadVertex>() as u64,
-                step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &wgpu::vertex_attr_array![0 => Float32x2],
-            }],
-            compilation_options: Default::default(),
-        },
-        fragment: Some(wgpu::FragmentState {
-            module: shader,
-            entry_point: "fs_main",
-            targets: &[Some(wgpu::ColorTargetState {
-                format: color_format,
-                blend: Some(wgpu::BlendState::REPLACE),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-            compilation_options: Default::default(),
-        }),
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::LineStrip,
-            strip_index_format: None,
-            front_face: wgpu::FrontFace::Ccw,
-            cull_mode: None,
-            unclipped_depth: false,
-            polygon_mode: wgpu::PolygonMode::Fill,
-            conservative: false,
-        },
-        depth_stencil: Some(wgpu::DepthStencilState {
-            format: depth_format,
-            depth_write_enabled: true,
-            depth_compare: wgpu::CompareFunction::Greater,
-            stencil: wgpu::StencilState::default(),
-            bias: wgpu::DepthBiasState::default(),
-        }),
-        multisample: wgpu::MultisampleState::default(),
-        multiview: None,
-    })
-}
-
-fn create_overlay_pipeline(
-    device: &wgpu::Device,
-    pipeline_layout: &wgpu::PipelineLayout,
-    shader: &wgpu::ShaderModule,
-    color_format: wgpu::TextureFormat,
-    depth_format: wgpu::TextureFormat,
-) -> wgpu::RenderPipeline {
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("overlay_pipeline"),
-        layout: Some(pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: shader,
-            entry_point: "vs_main",
-            buffers: &[wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<TextGlyphInstance>() as u64,
-                step_mode: wgpu::VertexStepMode::Instance,
-                attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Uint32],
-            }],
-            compilation_options: Default::default(),
-        },
-        fragment: Some(wgpu::FragmentState {
-            module: shader,
-            entry_point: "fs_main",
-            targets: &[Some(wgpu::ColorTargetState {
-                format: color_format,
-                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-            compilation_options: Default::default(),
-        }),
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleStrip,
-            strip_index_format: None,
-            front_face: wgpu::FrontFace::Ccw,
-            cull_mode: None,
-            unclipped_depth: false,
-            polygon_mode: wgpu::PolygonMode::Fill,
-            conservative: false,
-        },
-        depth_stencil: Some(wgpu::DepthStencilState {
-            format: depth_format,
-            depth_write_enabled: false,
-            depth_compare: wgpu::CompareFunction::Always,
-            stencil: wgpu::StencilState::default(),
-            bias: wgpu::DepthBiasState::default(),
-        }),
-        multisample: wgpu::MultisampleState::default(),
-        multiview: None,
-    })
-}
-
-fn overlay_supports_char(ch: char) -> bool {
-    ch == ' ' || ch == ':' || ch == '-' || ch.is_ascii_digit() || ch.is_ascii_uppercase()
-}
-
-fn transparent_batch_center(origin: glam::IVec3, face_dir: u32) -> glam::Vec3 {
-    let min = origin.as_vec3();
-    let half = CHUNK_SIZE_I32 as f32 * 0.5;
-    let center = min + glam::Vec3::splat(half);
-
-    match face_dir {
-        0 => center + glam::Vec3::new(half, 0.0, 0.0),
-        1 => center - glam::Vec3::new(half, 0.0, 0.0),
-        2 => center + glam::Vec3::new(0.0, half, 0.0),
-        3 => center - glam::Vec3::new(0.0, half, 0.0),
-        4 => center + glam::Vec3::new(0.0, 0.0, half),
-        _ => center - glam::Vec3::new(0.0, 0.0, half),
-    }
-}
-
-fn chunk_face_can_face_camera(
-    camera_position: glam::Vec3,
-    chunk_min: glam::Vec3,
-    chunk_max: glam::Vec3,
-    face_dir: u32,
-) -> bool {
-    const FACE_VISIBILITY_EPSILON: f32 = 1.0e-4;
-    const FACE_OFFSET: f32 = 1.0;
-
-    match face_dir {
-        0 => camera_position.x > chunk_min.x + FACE_OFFSET + FACE_VISIBILITY_EPSILON,
-        1 => camera_position.x < chunk_max.x - FACE_OFFSET - FACE_VISIBILITY_EPSILON,
-        2 => camera_position.y > chunk_min.y + FACE_OFFSET + FACE_VISIBILITY_EPSILON,
-        3 => camera_position.y < chunk_max.y - FACE_OFFSET - FACE_VISIBILITY_EPSILON,
-        4 => camera_position.z > chunk_min.z + FACE_OFFSET + FACE_VISIBILITY_EPSILON,
-        _ => camera_position.z < chunk_max.z - FACE_OFFSET - FACE_VISIBILITY_EPSILON,
-    }
-}
-
-fn build_draw_ref_bytes(max_draws: usize, draw_ref_stride: usize) -> Vec<u8> {
-    let mut draw_ref_bytes = vec![0u8; max_draws * draw_ref_stride];
-
-    for draw_index in 0..max_draws {
-        let offset = draw_index * draw_ref_stride;
-        let draw_ref = DrawRef { draw_meta_index: draw_index as u32, _pad: [0; 3] };
-        let draw_ref_size = std::mem::size_of::<DrawRef>();
-        draw_ref_bytes[offset..offset + draw_ref_size]
-            .copy_from_slice(bytemuck::bytes_of(&draw_ref));
-    }
-
-    draw_ref_bytes
-}
-
-fn next_face_capacity(current_capacity: u32, required_faces: u32) -> u32 {
-    if current_capacity == 0 {
-        return required_faces.max(1);
-    }
-
-    let mut capacity = current_capacity;
-
-    while capacity < required_faces {
-        capacity = capacity.saturating_mul(2);
-        if capacity == u32::MAX {
-            break;
-        }
-    }
-
-    capacity.max(required_faces)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{build_draw_ref_bytes, chunk_face_can_face_camera, next_face_capacity};
-    use crate::engine::render::gpu_types::DrawRef;
-
-    #[test]
-    fn capacity_stays_when_requirement_fits() {
-        assert_eq!(next_face_capacity(1024, 768), 1024);
-    }
-
-    #[test]
-    fn capacity_grows_by_doubling_until_requirement_fits() {
-        assert_eq!(next_face_capacity(1024, 1500), 2048);
-    }
-
-    #[test]
-    fn zero_capacity_grows_to_requirement() {
-        assert_eq!(next_face_capacity(0, 300), 300);
-    }
-
-    #[test]
-    fn directional_pruning_skips_backside_batches() {
-        let chunk_min = glam::Vec3::ZERO;
-        let chunk_max = glam::Vec3::splat(32.0);
-
-        assert!(!chunk_face_can_face_camera(
-            glam::Vec3::new(-10.0, 10.0, 10.0),
-            chunk_min,
-            chunk_max,
-            0,
-        ));
-        assert!(chunk_face_can_face_camera(
-            glam::Vec3::new(-10.0, 10.0, 10.0),
-            chunk_min,
-            chunk_max,
-            1,
-        ));
-    }
-
-    #[test]
-    fn directional_pruning_keeps_both_sides_when_camera_is_inside_chunk() {
-        let chunk_min = glam::Vec3::ZERO;
-        let chunk_max = glam::Vec3::splat(32.0);
-        let camera = glam::Vec3::splat(16.0);
-
-        assert!(chunk_face_can_face_camera(camera, chunk_min, chunk_max, 0));
-        assert!(chunk_face_can_face_camera(camera, chunk_min, chunk_max, 1));
-        assert!(chunk_face_can_face_camera(camera, chunk_min, chunk_max, 2));
-        assert!(chunk_face_can_face_camera(camera, chunk_min, chunk_max, 3));
-    }
-
-    #[test]
-    fn draw_ref_bytes_encode_sequential_draw_indices() {
-        let bytes = build_draw_ref_bytes(3, 256);
-
-        let first = bytemuck::from_bytes::<DrawRef>(&bytes[0..std::mem::size_of::<DrawRef>()]);
-        let second =
-            bytemuck::from_bytes::<DrawRef>(&bytes[256..256 + std::mem::size_of::<DrawRef>()]);
-        let third =
-            bytemuck::from_bytes::<DrawRef>(&bytes[512..512 + std::mem::size_of::<DrawRef>()]);
-
-        assert_eq!(first.draw_meta_index, 0);
-        assert_eq!(second.draw_meta_index, 1);
-        assert_eq!(third.draw_meta_index, 2);
     }
 }

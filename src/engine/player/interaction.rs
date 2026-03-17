@@ -1,5 +1,8 @@
 use crate::engine::{
-    core::math::{IVec3, Vec3},
+    core::{
+        collision::aabb_intersects,
+        math::{IVec3, Vec3},
+    },
     player::controller::Player,
     world::{
         accessor::{VoxelAccessor, WorldVoxelReader},
@@ -206,15 +209,6 @@ fn player_intersects_voxel(player: &Player, voxel: IVec3) -> bool {
     aabb_intersects(player_min, player_max, voxel_min, voxel_max)
 }
 
-fn aabb_intersects(a_min: Vec3, a_max: Vec3, b_min: Vec3, b_max: Vec3) -> bool {
-    a_min.x < b_max.x
-        && a_max.x > b_min.x
-        && a_min.y < b_max.y
-        && a_max.y > b_min.y
-        && a_min.z < b_max.z
-        && a_max.z > b_min.z
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,30 +233,8 @@ mod tests {
     }
 
     fn test_player() -> Player {
-        Player::from_config(&PlayerConfig {
-            spawn_x: 0.0,
-            spawn_y: 0.0,
-            spawn_z: 0.0,
-            reach_distance: 6.0,
-            mouse_sensitivity: 0.0022,
-            eye_height: 1.62,
-            radius: 0.3,
-            height: 1.8,
-            double_tap_window: 0.25,
-            collision_steps: 3,
-            walk_speed: 5.0,
-            walk_sprint_multiplier: 1.8,
-            walk_accel: 45.0,
-            air_accel: 10.0,
-            ground_friction: 14.0,
-            air_friction: 1.0,
-            jump_speed: 8.5,
-            gravity: 24.0,
-            fly_speed: 7.0,
-            fly_sprint_multiplier: 2.5,
-            fly_accel: 24.0,
-            fly_friction: 10.0,
-        })
+        let config = PlayerConfig { spawn_y: 0.0, ..PlayerConfig::default() };
+        Player::from_config(&config)
     }
 
     #[test]
@@ -282,7 +254,7 @@ mod tests {
             Vec3::new(0.0, 0.0, 1.0),
             8.0,
         )
-        .unwrap();
+        .expect("expected the raycast to hit the first stone block");
 
         assert_eq!(hit.block, IVec3::new(0, 0, 2));
         assert_eq!(hit.placement, Some(IVec3::new(0, 0, 1)));
@@ -307,7 +279,7 @@ mod tests {
             Vec3::new(1.0, 1.0, 0.0),
             8.0,
         )
-        .unwrap();
+        .expect("expected the raycast to hit one of the seam-adjacent blocks");
 
         assert_eq!(hit.block, IVec3::new(1, 0, 0));
         assert_ne!(hit.block, IVec3::new(1, 1, 0));

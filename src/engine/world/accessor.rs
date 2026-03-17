@@ -21,12 +21,12 @@ impl<'a> VoxelAccessor<'a> {
 impl WorldVoxelReader for VoxelAccessor<'_> {
     #[inline]
     fn get_world_voxel(&self, p: IVec3) -> Voxel {
-        let c = ChunkCoord::from_world_voxel(p);
-        let local = c.local_voxel(p);
+        let chunk_coord = ChunkCoord::from_world_voxel(p);
+        let local = chunk_coord.local_voxel(p);
 
         self.world
             .chunks
-            .get(&c)
+            .get(&chunk_coord)
             .map(|chunk| chunk.get(local.x as usize, local.y as usize, local.z as usize))
             .unwrap_or(Voxel::AIR)
     }

@@ -47,19 +47,19 @@ impl TextureRegistry {
 }
 
 pub fn create_texture_registry(blocks: &BlockRegistry) -> TextureRegistry {
-    let mut reg = TextureRegistry::new();
+    let mut registry = TextureRegistry::new();
 
     for block in blocks.iter() {
         block.textures.visit_refs(|texture| {
-            reg.register(texture.0.clone());
+            registry.register(texture.0.clone());
         });
     }
 
-    reg
+    registry
 }
 
 pub struct Materials {
-    pub texture: wgpu::Texture,
+    pub _texture: wgpu::Texture,
     pub view: wgpu::TextureView,
     pub sampler: wgpu::Sampler,
 }
@@ -153,10 +153,6 @@ impl Materials {
             ..Default::default()
         });
 
-        Ok(Self { texture, view, sampler })
-    }
-
-    pub fn keep_alive(&self) -> &wgpu::Texture {
-        &self.texture
+        Ok(Self { _texture: texture, view, sampler })
     }
 }

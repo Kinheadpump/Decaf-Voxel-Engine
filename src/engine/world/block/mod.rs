@@ -11,11 +11,11 @@ use registry::BlockRegistry;
 use textures::BlockTextures;
 
 pub fn create_default_block_registry() -> BlockRegistry {
-    let mut reg = BlockRegistry::new();
+    let mut registry = BlockRegistry::new();
 
-    reg.register(BlockBuilder::new("air").replaceable().textures(BlockTextures::all("air")));
+    registry.register(BlockBuilder::new("air").replaceable().textures(BlockTextures::all("air")));
 
-    reg.register(
+    registry.register(
         BlockBuilder::new("grass").solid().opaque().textures(BlockTextures::top_bottom_sides(
             "grass_top",
             "dirt",
@@ -23,26 +23,29 @@ pub fn create_default_block_registry() -> BlockRegistry {
         )),
     );
 
-    reg.register(BlockBuilder::new("dirt").solid().opaque().textures(BlockTextures::all("dirt")));
+    registry
+        .register(BlockBuilder::new("dirt").solid().opaque().textures(BlockTextures::all("dirt")));
 
-    reg.register(BlockBuilder::new("stone").solid().opaque().textures(BlockTextures::all("stone")));
+    registry.register(
+        BlockBuilder::new("stone").solid().opaque().textures(BlockTextures::all("stone")),
+    );
 
-    reg.register(
+    registry.register(
         BlockBuilder::new("oak_planks").solid().opaque().textures(BlockTextures::all("oak_planks")),
     );
 
-    reg.register(
+    registry.register(
         BlockBuilder::new("log")
             .solid()
             .opaque()
             .textures(BlockTextures::top_bottom_sides("log_top", "log_top", "log_side")),
     );
 
-    reg.register(
+    registry.register(
         BlockBuilder::new("glass").solid().transparent().textures(BlockTextures::all("glass")),
     );
 
-    reg.register(
+    registry.register(
         BlockBuilder::new("leaves")
             .solid()
             .transparent()
@@ -50,7 +53,7 @@ pub fn create_default_block_registry() -> BlockRegistry {
             .textures(BlockTextures::all("leaves")),
     );
 
-    reg.register(
+    registry.register(
         BlockBuilder::new("water")
             .transparent()
             .liquid()
@@ -58,5 +61,5 @@ pub fn create_default_block_registry() -> BlockRegistry {
             .textures(BlockTextures::all("water")),
     );
 
-    reg
+    registry
 }

@@ -188,17 +188,17 @@ fn build_direction_slice(
     let mut mask = [[MaskCell::default(); CHUNK_SIZE]; CHUNK_SIZE];
     let mut used = [[false; CHUNK_SIZE]; CHUNK_SIZE];
 
-    for v in 0..CHUNK_SIZE {
-        for u in 0..CHUNK_SIZE {
-            used[u][v] = false;
+    for v_index in 0..CHUNK_SIZE {
+        for u_index in 0..CHUNK_SIZE {
+            used[u_index][v_index] = false;
 
-            let local = face_local_xyz(dir, depth, u, v);
+            let local = face_local_xyz(dir, depth, u_index, v_index);
             let voxel = chunk.get(local.x as usize, local.y as usize, local.z as usize);
             let block_id = voxel.block_id();
             let block = resolved_blocks.get_voxel(voxel);
 
             if block.is_air() {
-                mask[u][v] = MaskCell::default();
+                mask[u_index][v_index] = MaskCell::default();
                 continue;
             }
 
@@ -210,7 +210,7 @@ fn build_direction_slice(
 
             let visible = face_visible_between(block_id, block, neighbor_id, neighbor);
 
-            mask[u][v] = if visible {
+            mask[u_index][v_index] = if visible {
                 MaskCell {
                     visible: true,
                     block_id,
@@ -228,13 +228,13 @@ fn build_direction_slice(
     }
 
     // Greedy meshing on the mask
-    for v in 0..CHUNK_SIZE {
-        for u in 0..CHUNK_SIZE {
-            if used[u][v] {
+    for v_index in 0..CHUNK_SIZE {
+        for u_index in 0..CHUNK_SIZE {
+            if used[u_index][v_index] {
                 continue;
             }
 
-            let cell = mask[u][v];
+            let cell = mask[u_index][v_index];
             if !cell.visible {
                 continue;
             }
@@ -244,9 +244,9 @@ fn build_direction_slice(
             let bucket = cell.bucket;
 
             let mut width = 1usize;
-            while u + width < CHUNK_SIZE {
-                let c = mask[u + width][v];
-                if used[u + width][v]
+            while u_index + width < CHUNK_SIZE {
+                let c = mask[u_index + width][v_index];
+                if used[u_index + width][v_index]
                     || !c.visible
                     || c.block_id != block_id
                     || c.texture_id != texture_id
@@ -258,10 +258,10 @@ fn build_direction_slice(
             }
 
             let mut height = 1usize;
-            'outer: while v + height < CHUNK_SIZE {
+            'outer: while v_index + height < CHUNK_SIZE {
                 for x in 0..width {
-                    let c = mask[u + x][v + height];
-                    if used[u + x][v + height]
+                    let c = mask[u_index + x][v_index + height];
+                    if used[u_index + x][v_index + height]
                         || !c.visible
                         || c.block_id != block_id
                         || c.texture_id != texture_id
@@ -273,13 +273,13 @@ fn build_direction_slice(
                 height += 1;
             }
 
-            for vv in v..v + height {
-                for uu in u..u + width {
-                    used[uu][vv] = true;
+            for used_column in used.iter_mut().skip(u_index).take(width) {
+                for used_cell in used_column.iter_mut().skip(v_index).take(height) {
+                    *used_cell = true;
                 }
             }
 
-            let anchor = face_local_xyz(dir, depth, u, v);
+            let anchor = face_local_xyz(dir, depth, u_index, v_index);
 
             let packed = PackedFace::pack(
                 anchor.x as u32,

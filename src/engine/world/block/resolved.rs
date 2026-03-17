@@ -115,21 +115,6 @@ impl ResolvedBlockRegistry {
                     pos_z: resolve_tex(sides),
                     neg_z: resolve_tex(sides),
                 },
-                crate::engine::world::block::textures::BlockTextures::Explicit {
-                    pos_x,
-                    neg_x,
-                    pos_y,
-                    neg_y,
-                    pos_z,
-                    neg_z,
-                } => ResolvedFaceTextures {
-                    pos_x: resolve_tex(pos_x),
-                    neg_x: resolve_tex(neg_x),
-                    pos_y: resolve_tex(pos_y),
-                    neg_y: resolve_tex(neg_y),
-                    pos_z: resolve_tex(pos_z),
-                    neg_z: resolve_tex(neg_z),
-                },
             };
 
             blocks.push(ResolvedBlock { id: def.id, flags: def.flags, textures });

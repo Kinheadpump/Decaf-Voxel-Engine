@@ -1,11 +1,44 @@
 [debug]
 enable_profiler = true
 
+[window]
+width = 1280
+height = 720
+
 [render]
 render_radius_xz = 4
 render_radius_y = 1
 stream_generation_budget = 16
 enable_hiz_occlusion = false
+initial_face_capacity = 4000000
+max_visible_draws = 32768
+
+[render.camera]
+fov_y_degrees = 70.0
+near_plane = 0.1
+
+[render.clear_color]
+r = 0.45
+g = 0.70
+b = 0.95
+
+[render.overlay]
+max_glyphs = 256
+glyph_width = 12.0
+glyph_height = 15.0
+padding_x = 8.0
+padding_y = 8.0
+glyph_advance_x = 13.0
+line_advance_y = 18.0
+
+[render.hiz]
+max_base_dimension = 256
+readback_slots = 3
+max_passes = 16
+max_camera_reuse_distance = 8.0
+min_camera_reuse_forward_dot = 0.97
+near_chunk_skip_distance = 48.0
+occlusion_depth_bias = 0.0001
 
 [player]
 spawn_x = 0.0
@@ -33,3 +66,5 @@ fly_friction = 10.0
 
 [world]
 seed = 12345
+surface_level = 0
+soil_depth = 4

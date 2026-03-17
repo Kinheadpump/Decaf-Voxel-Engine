@@ -256,10 +256,10 @@ fn worker_loop(
     result_tx: Sender<WorkerMeshResult>,
     resolved_blocks: Arc<ResolvedBlockRegistry>,
 ) {
-    if let Some(client) = tracy_client::Client::running() {
-        if let Some(thread_name) = thread::current().name() {
-            client.set_thread_name(thread_name);
-        }
+    if let Some(client) = tracy_client::Client::running()
+        && let Some(thread_name) = thread::current().name()
+    {
+        client.set_thread_name(thread_name);
     }
 
     while let Ok(job) = job_rx.recv() {
@@ -302,7 +302,7 @@ fn worker_loop(
 }
 
 pub fn sort_chunk_coords_by_priority(coords: &mut [ChunkCoord], focus: MeshingFocus) {
-    coords.sort_by(|a, b| chunk_priority_key(*a, focus).cmp(&chunk_priority_key(*b, focus)));
+    coords.sort_by_key(|coord| chunk_priority_key(*coord, focus));
 }
 
 fn sort_dirty_chunk_entries_by_priority(entries: &mut [DirtyChunkEntry], focus: MeshingFocus) {

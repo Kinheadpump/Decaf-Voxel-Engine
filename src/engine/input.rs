@@ -82,12 +82,9 @@ impl InputState {
     }
 
     pub fn handle_device_event(&mut self, event: &DeviceEvent) {
-        match event {
-            DeviceEvent::MouseMotion { delta } => {
-                self.mouse_delta.0 += delta.0 as f32;
-                self.mouse_delta.1 += delta.1 as f32;
-            }
-            _ => {}
+        if let DeviceEvent::MouseMotion { delta } = event {
+            self.mouse_delta.0 += delta.0 as f32;
+            self.mouse_delta.1 += delta.1 as f32;
         }
     }
 
