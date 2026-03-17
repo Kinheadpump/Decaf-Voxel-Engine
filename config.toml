@@ -1,5 +1,5 @@
 [debug]
-enable_profiler = false
+enable_profiler = true
 
 [render]
 render_radius_xz = 4
