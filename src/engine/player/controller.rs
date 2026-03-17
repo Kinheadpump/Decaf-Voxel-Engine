@@ -53,6 +53,21 @@ impl Player {
     }
 
     #[inline]
+    pub fn aabb(&self) -> (Vec3, Vec3) {
+        let min = Vec3::new(
+            self.position.x - self.radius,
+            self.position.y,
+            self.position.z - self.radius,
+        );
+        let max = Vec3::new(
+            self.position.x + self.radius,
+            self.position.y + self.height,
+            self.position.z + self.radius,
+        );
+        (min, max)
+    }
+
+    #[inline]
     pub fn forward_flat(&self) -> Vec3 {
         Vec3::new(self.yaw.sin(), 0.0, -self.yaw.cos()).normalize_or_zero()
     }
@@ -70,6 +85,19 @@ impl Player {
         let cy = self.yaw.cos();
 
         Vec3::new(sy * cp, sp, -cy * cp).normalize_or_zero()
+    }
+
+    #[inline]
+    pub fn cardinal_facing(&self) -> &'static str {
+        let forward = self.forward_flat();
+
+        if forward.z.abs() >= forward.x.abs() {
+            if forward.z <= 0.0 { "NORTH" } else { "SOUTH" }
+        } else if forward.x >= 0.0 {
+            "EAST"
+        } else {
+            "WEST"
+        }
     }
 }
 

@@ -98,9 +98,8 @@ fn movement_wish_dir_flat(player: &Player, input: &InputState) -> Vec3 {
 
 fn movement_wish_dir_flying(player: &Player, input: &InputState) -> Vec3 {
     let mut dir = Vec3::ZERO;
-
-    let forward = player.forward_3d();
-    let right = forward.cross(Vec3::Y).normalize_or_zero();
+    let forward = player.forward_flat();
+    let right = player.right_flat();
 
     if input.key_held(KeyCode::KeyW) {
         dir += forward;
@@ -217,9 +216,59 @@ fn update_flying(
 }
 
 fn player_aabb(player: &Player, pos: Vec3) -> (Vec3, Vec3) {
-    let min = Vec3::new(pos.x - player.radius, pos.y, pos.z - player.radius);
-    let max = Vec3::new(pos.x + player.radius, pos.y + player.height, pos.z + player.radius);
-    (min, max)
+    let mut moved_player = player.clone();
+    moved_player.position = pos;
+    moved_player.aabb()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::movement_wish_dir_flying;
+    use crate::{
+        config::PlayerConfig,
+        engine::{input::InputState, player::controller::Player},
+    };
+    use winit::keyboard::KeyCode;
+
+    fn test_player() -> Player {
+        Player::from_config(&PlayerConfig {
+            spawn_x: 0.0,
+            spawn_y: 0.0,
+            spawn_z: 0.0,
+            reach_distance: 6.0,
+            mouse_sensitivity: 0.0022,
+            eye_height: 1.62,
+            radius: 0.3,
+            height: 1.8,
+            double_tap_window: 0.25,
+            collision_steps: 3,
+            walk_speed: 5.0,
+            walk_sprint_multiplier: 1.8,
+            walk_accel: 45.0,
+            air_accel: 10.0,
+            ground_friction: 14.0,
+            air_friction: 1.0,
+            jump_speed: 8.5,
+            gravity: 24.0,
+            fly_speed: 7.0,
+            fly_sprint_multiplier: 2.5,
+            fly_accel: 24.0,
+            fly_friction: 10.0,
+        })
+    }
+
+    #[test]
+    fn flying_forward_stays_flat_when_looking_up() {
+        let mut player = test_player();
+        let mut input = InputState::new();
+
+        player.pitch = 1.0;
+        input.set_key_held_for_test(KeyCode::KeyW);
+
+        let wish_dir = movement_wish_dir_flying(&player, &input);
+
+        assert!(wish_dir.y.abs() <= f32::EPSILON);
+    }
 }
 
 fn is_solid_at_world(

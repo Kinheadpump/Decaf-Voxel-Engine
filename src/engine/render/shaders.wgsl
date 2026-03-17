@@ -95,6 +95,14 @@ fn face_normal(dir: u32) -> vec3<f32> {
     }
 }
 
+fn face_tex_uv(dir: u32, uv: vec2<f32>, w: f32, h: f32) -> vec2<f32> {
+    switch dir {
+        case 0u { return vec2<f32>((1.0 - uv.y) * h, uv.x * w); } // +X
+        case 5u { return vec2<f32>((1.0 - uv.y) * h, uv.x * w); } // -Z
+        default { return vec2<f32>(uv.x * w, uv.y * h); }
+    }
+}
+
 fn face_dir_color(dir: u32) -> vec3<f32> {
     switch dir {
         case 0u { return vec3<f32>(0.95, 0.34, 0.27); }
@@ -166,7 +174,7 @@ fn vs_main(in: VsIn) -> VsOut {
 
     var out: VsOut;
     out.clip_pos = camera.view_proj * vec4<f32>(world_pos, 1.0);
-    out.tex_uv = vec2<f32>(in.uv.x * w, in.uv.y * h);
+    out.tex_uv = face_tex_uv(draw_meta.face_dir, in.uv, w, h);
     out.tex_id = tex_id;
     out.normal = normal;
     return out;

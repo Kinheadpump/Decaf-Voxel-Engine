@@ -665,6 +665,7 @@ impl Renderer {
                 debug_overlay.player_chunk[1],
                 debug_overlay.player_chunk[2]
             ),
+            format!("FACING: {}", debug_overlay.player_facing),
             format!("WORLD: {}", stats.loaded_chunks),
             format!("GPU: {}", stats.gpu_chunks),
             format!("DRAWN: {}", stats.drawn_chunks),

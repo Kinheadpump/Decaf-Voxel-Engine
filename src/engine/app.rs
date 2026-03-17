@@ -19,6 +19,7 @@ use crate::{
         input::InputState,
         player::{
             controller::{Player, camera_from_player},
+            interaction::{place_block_in_front, remove_block_in_front},
             physics::update_player,
         },
         render::{
@@ -78,6 +79,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     let stream_generation_budget = config.render.stream_generation_budget;
     let enable_hiz_occlusion = config.render.enable_hiz_occlusion;
     let block_registry = create_default_block_registry();
+    let stone_block_id = block_registry.must_get_id("stone");
     let texture_registry = create_texture_registry(&block_registry);
     let resolved_blocks =
         ResolvedBlockRegistry::build(&block_registry, texture_registry.layer_map());
@@ -194,6 +196,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
                     loaded_chunks: world.chunks.len() as u32,
                     player_voxel: [player_voxel.x, player_voxel.y, player_voxel.z],
                     player_chunk: [player_chunk.x, player_chunk.y, player_chunk.z],
+                    player_facing: player.cardinal_facing(),
                 }));
 
                 renderer.render(&camera).unwrap();
@@ -211,6 +214,35 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
                     total_time,
                     &player_config,
                 );
+
+                let interaction_origin = player.eye_position();
+                let interaction_direction = player.forward_3d();
+
+                if input.mouse_pressed(MouseButton::Left)
+                    && remove_block_in_front(
+                        &mut world,
+                        &renderer.resolved_blocks,
+                        interaction_origin,
+                        interaction_direction,
+                        player_config.reach_distance,
+                    )
+                {
+                    crate::log_debug!("Removed block");
+                }
+
+                if input.mouse_pressed(MouseButton::Right)
+                    && place_block_in_front(
+                        &mut world,
+                        &renderer.resolved_blocks,
+                        &player,
+                        interaction_origin,
+                        interaction_direction,
+                        player_config.reach_distance,
+                        stone_block_id,
+                    )
+                {
+                    crate::log_debug!("Placed stone block");
+                }
             }
 
             let focus = focus_from_player(&player);

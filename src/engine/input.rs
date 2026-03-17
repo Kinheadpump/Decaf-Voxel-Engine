@@ -100,4 +100,14 @@ impl InputState {
     pub fn key_pressed(&self, key: KeyCode) -> bool {
         self.pressed_keys.contains(&key)
     }
+
+    #[inline]
+    pub fn mouse_pressed(&self, button: MouseButton) -> bool {
+        self.pressed_mouse.contains(&button)
+    }
+
+    #[cfg(test)]
+    pub fn set_key_held_for_test(&mut self, key: KeyCode) {
+        self.held_keys.insert(key);
+    }
 }

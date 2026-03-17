@@ -26,6 +26,7 @@ pub struct PlayerConfig {
     pub spawn_x: f32,
     pub spawn_y: f32,
     pub spawn_z: f32,
+    pub reach_distance: f32,
     pub mouse_sensitivity: f32,
     pub eye_height: f32,
     pub radius: f32,

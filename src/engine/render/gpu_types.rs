@@ -135,6 +135,7 @@ pub struct DebugOverlayInput {
     pub loaded_chunks: u32,
     pub player_voxel: [i32; 3],
     pub player_chunk: [i32; 3],
+    pub player_facing: &'static str,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
