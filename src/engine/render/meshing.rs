@@ -12,23 +12,38 @@ use crate::engine::{
         math::{IVec3, Vec3},
         types::FaceDir,
     },
-    render::gpu_types::ChunkMeshCpu,
     world::{
-        accessor::WorldVoxelReader, block::resolved::ResolvedBlockRegistry, chunk::Chunk,
-        coord::ChunkCoord, mesher::build_chunk_mesh, storage::World, voxel::Voxel,
+        accessor::WorldVoxelReader,
+        block::resolved::ResolvedBlockRegistry,
+        chunk::Chunk,
+        coord::ChunkCoord,
+        mesher::{
+            ChunkMeshDirtyRegion, ChunkMeshSlices, build_chunk_mesh_slices,
+            rebuild_chunk_mesh_slices,
+        },
+        storage::{DirtyChunkEntry, World},
+        voxel::Voxel,
     },
 };
 
 struct MeshJob {
     request_id: u64,
+    dirty_region: ChunkMeshDirtyRegion,
+    previous_mesh: Option<ChunkMeshSlices>,
     snapshot: ChunkMeshingSnapshot,
+}
+
+struct WorkerMeshResult {
+    pub coord: ChunkCoord,
+    pub request_id: u64,
+    pub generation: u32,
+    pub mesh: crate::engine::render::gpu_types::ChunkMeshCpu,
+    pub mesh_slices: ChunkMeshSlices,
 }
 
 pub struct MeshResult {
     pub coord: ChunkCoord,
-    pub request_id: u64,
-    pub generation: u32,
-    pub mesh: ChunkMeshCpu,
+    pub mesh: crate::engine::render::gpu_types::ChunkMeshCpu,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -96,8 +111,9 @@ impl WorldVoxelReader for ChunkMeshingSnapshot {
 
 pub struct ThreadedMesher {
     job_tx: Option<Sender<MeshJob>>,
-    result_rx: Receiver<MeshResult>,
+    result_rx: Receiver<WorkerMeshResult>,
     pending_jobs: AHashMap<ChunkCoord, PendingJob>,
+    mesh_caches: AHashMap<ChunkCoord, ChunkMeshSlices>,
     next_request_id: u64,
     workers: Vec<JoinHandle<()>>,
 }
@@ -105,7 +121,7 @@ pub struct ThreadedMesher {
 impl ThreadedMesher {
     pub fn new(resolved_blocks: ResolvedBlockRegistry) -> Self {
         let (job_tx, job_rx) = unbounded::<MeshJob>();
-        let (result_tx, result_rx) = unbounded::<MeshResult>();
+        let (result_tx, result_rx) = unbounded::<WorkerMeshResult>();
         let resolved_blocks = Arc::new(resolved_blocks);
         let worker_count = thread::available_parallelism()
             .map(|count| count.get().saturating_sub(1).max(1))
@@ -132,6 +148,7 @@ impl ThreadedMesher {
             job_tx: Some(job_tx),
             result_rx,
             pending_jobs: AHashMap::new(),
+            mesh_caches: AHashMap::new(),
             next_request_id: 1,
             workers,
         }
@@ -143,25 +160,28 @@ impl ThreadedMesher {
         };
 
         let mut dirty = world.take_dirty();
-        sort_chunk_coords_by_priority(&mut dirty, focus);
+        sort_dirty_chunk_entries_by_priority(&mut dirty, focus);
 
-        for coord in dirty {
+        for entry in dirty {
+            let coord = entry.coord;
             let Some(snapshot) = ChunkMeshingSnapshot::capture(world, coord) else {
                 self.pending_jobs.remove(&coord);
+                self.mesh_caches.remove(&coord);
                 continue;
             };
 
             let generation = snapshot.generation;
-            if self.pending_jobs.get(&coord).is_some_and(|pending| pending.generation >= generation)
-            {
-                continue;
-            }
+            let full_rebuild = entry.region.is_full() || !self.mesh_caches.contains_key(&coord);
+            let dirty_region =
+                if full_rebuild { ChunkMeshDirtyRegion::full() } else { entry.region };
+            let previous_mesh =
+                if full_rebuild { None } else { self.mesh_caches.get(&coord).cloned() };
 
             let request_id = self.next_request_id;
             self.next_request_id = self.next_request_id.wrapping_add(1).max(1);
             self.pending_jobs.insert(coord, PendingJob { request_id, generation });
             job_tx
-                .send(MeshJob { request_id, snapshot })
+                .send(MeshJob { request_id, dirty_region, previous_mesh, snapshot })
                 .context("failed to send chunk meshing job to worker thread")?;
         }
 
@@ -170,6 +190,7 @@ impl ThreadedMesher {
 
     pub fn cancel(&mut self, coord: ChunkCoord) {
         self.pending_jobs.remove(&coord);
+        self.mesh_caches.remove(&coord);
     }
 
     pub fn has_pending(&self) -> bool {
@@ -205,14 +226,15 @@ impl ThreadedMesher {
         }
     }
 
-    fn accept_result(&mut self, result: MeshResult) -> Option<MeshResult> {
+    fn accept_result(&mut self, result: WorkerMeshResult) -> Option<MeshResult> {
         match self.pending_jobs.get(&result.coord).copied() {
             Some(pending)
                 if pending.request_id == result.request_id
                     && pending.generation == result.generation =>
             {
                 self.pending_jobs.remove(&result.coord);
-                Some(result)
+                self.mesh_caches.insert(result.coord, result.mesh_slices);
+                Some(MeshResult { coord: result.coord, mesh: result.mesh })
             }
             _ => None,
         }
@@ -231,7 +253,7 @@ impl Drop for ThreadedMesher {
 
 fn worker_loop(
     job_rx: Receiver<MeshJob>,
-    result_tx: Sender<MeshResult>,
+    result_tx: Sender<WorkerMeshResult>,
     resolved_blocks: Arc<ResolvedBlockRegistry>,
 ) {
     if let Some(client) = tracy_client::Client::running() {
@@ -244,11 +266,34 @@ fn worker_loop(
         let _span = crate::profile_span!("mesher::build_chunk_mesh");
         let coord = job.snapshot.coord;
         let generation = job.snapshot.generation;
-        let mesh =
-            build_chunk_mesh(coord, &job.snapshot.center, &job.snapshot, resolved_blocks.as_ref());
+        let mesh_slices = if let Some(mut mesh_slices) = job.previous_mesh {
+            rebuild_chunk_mesh_slices(
+                job.dirty_region,
+                coord,
+                &job.snapshot.center,
+                &job.snapshot,
+                resolved_blocks.as_ref(),
+                &mut mesh_slices,
+            );
+            mesh_slices
+        } else {
+            build_chunk_mesh_slices(
+                coord,
+                &job.snapshot.center,
+                &job.snapshot,
+                resolved_blocks.as_ref(),
+            )
+        };
+        let mesh = mesh_slices.flatten();
 
         if result_tx
-            .send(MeshResult { coord, request_id: job.request_id, generation, mesh })
+            .send(WorkerMeshResult {
+                coord,
+                request_id: job.request_id,
+                generation,
+                mesh,
+                mesh_slices,
+            })
             .is_err()
         {
             break;
@@ -258,6 +303,12 @@ fn worker_loop(
 
 pub fn sort_chunk_coords_by_priority(coords: &mut [ChunkCoord], focus: MeshingFocus) {
     coords.sort_by(|a, b| chunk_priority_key(*a, focus).cmp(&chunk_priority_key(*b, focus)));
+}
+
+fn sort_dirty_chunk_entries_by_priority(entries: &mut [DirtyChunkEntry], focus: MeshingFocus) {
+    entries.sort_by(|a, b| {
+        chunk_priority_key(a.coord, focus).cmp(&chunk_priority_key(b.coord, focus))
+    });
 }
 
 fn chunk_priority_key(coord: ChunkCoord, focus: MeshingFocus) -> (i32, i32, i32, i32, i32) {

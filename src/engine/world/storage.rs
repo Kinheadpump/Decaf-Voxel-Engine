@@ -1,26 +1,46 @@
-use ahash::{AHashMap, AHashSet};
+use ahash::AHashMap;
 
 use crate::engine::{
     core::{
         math::{IVec3, UVec3},
         types::CHUNK_SIZE,
     },
-    world::{block::id::BlockId, chunk::Chunk, coord::ChunkCoord, voxel::Voxel},
+    world::{
+        block::id::BlockId, chunk::Chunk, coord::ChunkCoord, mesher::ChunkMeshDirtyRegion,
+        voxel::Voxel,
+    },
 };
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DirtyChunkEntry {
+    pub coord: ChunkCoord,
+    pub region: ChunkMeshDirtyRegion,
+}
 
 pub struct World {
     pub chunks: AHashMap<ChunkCoord, Chunk>,
-    dirty_set: AHashSet<ChunkCoord>,
+    dirty_regions: AHashMap<ChunkCoord, ChunkMeshDirtyRegion>,
     dirty_queue: Vec<ChunkCoord>,
 }
 
 impl World {
     pub fn new() -> Self {
-        Self { chunks: AHashMap::new(), dirty_set: AHashSet::new(), dirty_queue: Vec::new() }
+        Self { chunks: AHashMap::new(), dirty_regions: AHashMap::new(), dirty_queue: Vec::new() }
     }
 
     pub fn mark_dirty(&mut self, coord: ChunkCoord) {
-        if self.dirty_set.insert(coord) {
+        self.mark_dirty_region(coord, ChunkMeshDirtyRegion::full());
+    }
+
+    pub fn mark_dirty_region(&mut self, coord: ChunkCoord, region: ChunkMeshDirtyRegion) {
+        if region.is_empty() {
+            return;
+        }
+
+        if let Some(existing) = self.dirty_regions.get_mut(&coord) {
+            existing.merge(region);
+        } else {
+            self.dirty_regions.insert(coord, region);
             self.dirty_queue.push(coord);
         }
     }
@@ -35,7 +55,7 @@ impl World {
     }
 
     pub fn remove_chunk(&mut self, coord: ChunkCoord) -> Option<Chunk> {
-        self.dirty_set.remove(&coord);
+        self.dirty_regions.remove(&coord);
         self.dirty_queue.retain(|queued| *queued != coord);
         self.chunks.remove(&coord)
     }
@@ -61,42 +81,64 @@ impl World {
             chunk.set(local.x as usize, local.y as usize, local.z as usize, voxel);
         }
 
-        self.mark_dirty(coord);
+        self.mark_dirty_region(coord, ChunkMeshDirtyRegion::from_local_voxel(local));
         self.mark_border_neighbors_dirty(coord, local);
         true
     }
 
-    pub fn take_dirty(&mut self) -> Vec<ChunkCoord> {
+    pub fn take_dirty(&mut self) -> Vec<DirtyChunkEntry> {
         let dirty_chunks = std::mem::take(&mut self.dirty_queue);
-        self.dirty_set.clear();
-        dirty_chunks
+        let mut dirty = Vec::with_capacity(dirty_chunks.len());
+
+        for coord in dirty_chunks {
+            if let Some(region) = self.dirty_regions.remove(&coord) {
+                dirty.push(DirtyChunkEntry { coord, region });
+            }
+        }
+
+        dirty
     }
 
     fn mark_border_neighbors_dirty(&mut self, coord: ChunkCoord, local: UVec3) {
-        let maybe_mark = |delta: IVec3, this: &mut Self| {
+        let maybe_mark = |delta: IVec3, neighbor_local: UVec3, this: &mut Self| {
             let neighbor = coord.offset(delta);
             if this.chunks.contains_key(&neighbor) {
-                this.mark_dirty(neighbor);
+                this.mark_dirty_region(
+                    neighbor,
+                    ChunkMeshDirtyRegion::from_local_voxel(neighbor_local),
+                );
             }
         };
 
         if local.x == 0 {
-            maybe_mark(IVec3::new(-1, 0, 0), self);
+            maybe_mark(
+                IVec3::new(-1, 0, 0),
+                UVec3::new((CHUNK_SIZE - 1) as u32, local.y, local.z),
+                self,
+            );
         }
         if local.x as usize == CHUNK_SIZE - 1 {
-            maybe_mark(IVec3::new(1, 0, 0), self);
+            maybe_mark(IVec3::new(1, 0, 0), UVec3::new(0, local.y, local.z), self);
         }
         if local.y == 0 {
-            maybe_mark(IVec3::new(0, -1, 0), self);
+            maybe_mark(
+                IVec3::new(0, -1, 0),
+                UVec3::new(local.x, (CHUNK_SIZE - 1) as u32, local.z),
+                self,
+            );
         }
         if local.y as usize == CHUNK_SIZE - 1 {
-            maybe_mark(IVec3::new(0, 1, 0), self);
+            maybe_mark(IVec3::new(0, 1, 0), UVec3::new(local.x, 0, local.z), self);
         }
         if local.z == 0 {
-            maybe_mark(IVec3::new(0, 0, -1), self);
+            maybe_mark(
+                IVec3::new(0, 0, -1),
+                UVec3::new(local.x, local.y, (CHUNK_SIZE - 1) as u32),
+                self,
+            );
         }
         if local.z as usize == CHUNK_SIZE - 1 {
-            maybe_mark(IVec3::new(0, 0, 1), self);
+            maybe_mark(IVec3::new(0, 0, 1), UVec3::new(local.x, local.y, 0), self);
         }
     }
 }
@@ -118,8 +160,8 @@ mod tests {
         assert!(world.set_block_world(IVec3::new((CHUNK_SIZE - 1) as i32, 0, 0), BlockId(1)));
 
         let dirty = world.take_dirty();
-        assert!(dirty.contains(&center));
-        assert!(dirty.contains(&east));
+        assert!(dirty.iter().any(|entry| entry.coord == center));
+        assert!(dirty.iter().any(|entry| entry.coord == east));
     }
 
     #[test]
@@ -133,7 +175,9 @@ mod tests {
         assert!(world.set_block_world(IVec3::new(4, 4, 4), BlockId(1)));
 
         let dirty = world.take_dirty();
-        assert_eq!(dirty, vec![center]);
+        assert_eq!(dirty.len(), 1);
+        assert_eq!(dirty[0].coord, center);
+        assert!(!dirty[0].region.is_full());
     }
 
     #[test]
