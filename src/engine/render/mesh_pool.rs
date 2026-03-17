@@ -22,7 +22,9 @@ impl MeshPool {
         let face_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("face_buffer"),
             size: capacity_faces as u64 * std::mem::size_of::<PackedFace>() as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
@@ -45,6 +47,10 @@ impl MeshPool {
         self.free.push((offset, count));
         self.free.sort_by_key(|&(o, _)| o);
         self.coalesce();
+    }
+
+    pub fn total_free_faces(&self) -> u32 {
+        self.free.iter().map(|&(_, count)| count).sum()
     }
 
     fn coalesce(&mut self) {

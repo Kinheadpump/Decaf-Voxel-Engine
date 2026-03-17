@@ -50,6 +50,10 @@ impl ChunkMeshCpu {
             source_generation: 0,
         }
     }
+
+    pub fn face_count(&self) -> u32 {
+        self.faces.iter().flat_map(|dirs| dirs.iter()).map(|faces| faces.len() as u32).sum()
+    }
 }
 
 #[repr(C)]
@@ -107,4 +111,41 @@ impl RenderSettingsUniform {
             _pad1: 0,
         }
     }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
+pub struct TextOverlayUniform {
+    pub screen_size: [f32; 2],
+    pub _pad: [f32; 2],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
+pub struct TextGlyphInstance {
+    pub origin_px: [f32; 2],
+    pub size_px: [f32; 2],
+    pub glyph_code: u32,
+    pub _pad: [u32; 3],
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DebugOverlayInput {
+    pub fps: u32,
+    pub loaded_chunks: u32,
+    pub player_voxel: [i32; 3],
+    pub player_chunk: [i32; 3],
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RenderStats {
+    pub loaded_chunks: u32,
+    pub gpu_chunks: u32,
+    pub drawn_chunks: u32,
+    pub frustum_culled_chunks: u32,
+    pub occlusion_culled_chunks: u32,
+    pub opaque_draws: u32,
+    pub transparent_draws: u32,
+    pub meshing_pending_chunks: u32,
+    pub hiz_enabled: bool,
 }

@@ -4,6 +4,8 @@ enable_profiler = true
 [render]
 render_radius_xz = 4
 render_radius_y = 1
+stream_generation_budget = 16
+enable_hiz_occlusion = false
 
 [player]
 spawn_x = 0.0

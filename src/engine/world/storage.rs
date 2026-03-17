@@ -30,6 +30,16 @@ impl World {
         self.mark_dirty(coord);
     }
 
+    pub fn contains_chunk(&self, coord: ChunkCoord) -> bool {
+        self.chunks.contains_key(&coord)
+    }
+
+    pub fn remove_chunk(&mut self, coord: ChunkCoord) -> Option<Chunk> {
+        self.dirty_set.remove(&coord);
+        self.dirty_queue.retain(|queued| *queued != coord);
+        self.chunks.remove(&coord)
+    }
+
     pub fn set_block_world(&mut self, p: IVec3, block_id: BlockId) -> bool {
         self.set_voxel_world(p, Voxel::from_block_id(block_id))
     }
@@ -124,5 +134,17 @@ mod tests {
 
         let dirty = world.take_dirty();
         assert_eq!(dirty, vec![center]);
+    }
+
+    #[test]
+    fn removing_chunk_clears_it_from_dirty_queue() {
+        let mut world = World::new();
+        let center = ChunkCoord(IVec3::new(0, 0, 0));
+
+        world.insert_chunk(center, Chunk::new());
+        assert!(world.remove_chunk(center).is_some());
+
+        assert!(world.take_dirty().is_empty());
+        assert!(!world.contains_chunk(center));
     }
 }

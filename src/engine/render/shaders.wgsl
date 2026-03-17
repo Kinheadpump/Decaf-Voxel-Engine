@@ -183,6 +183,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 
     let light_dir = normalize(vec3<f32>(0.7, 1.0, 0.5));
     let diffuse = max(dot(in.normal, light_dir), 0.18);
-    let color = textureSample(tex_array, tex_sampler, fract(in.tex_uv), i32(in.tex_id));
+    let sample_uv = vec2<f32>(fract(in.tex_uv.x), fract(1.0 - in.tex_uv.y));
+    let color = textureSample(tex_array, tex_sampler, sample_uv, i32(in.tex_id));
     return vec4<f32>(color.rgb * diffuse, color.a);
 }

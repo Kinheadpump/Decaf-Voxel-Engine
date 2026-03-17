@@ -17,6 +17,8 @@ pub struct DebugConfig {
 pub struct RenderConfig {
     pub render_radius_xz: i32,
     pub render_radius_y: i32,
+    pub stream_generation_budget: usize,
+    pub enable_hiz_occlusion: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

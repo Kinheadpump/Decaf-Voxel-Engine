@@ -2,6 +2,7 @@ use bytemuck::{Pod, Zeroable};
 
 use crate::engine::core::math::{Mat4, Vec3};
 
+#[derive(Clone, Copy, Debug)]
 pub struct Camera {
     pub position: Vec3,
     pub forward: Vec3,
@@ -29,6 +30,10 @@ impl Camera {
 
     pub fn proj(&self) -> Mat4 {
         perspective_reverse_infinite_rh(self.fov_y_radians, self.aspect, self.near_plane)
+    }
+
+    pub fn view_proj(&self) -> Mat4 {
+        self.proj() * self.view()
     }
 
     pub fn build_uniform(&self) -> CameraUniform {
