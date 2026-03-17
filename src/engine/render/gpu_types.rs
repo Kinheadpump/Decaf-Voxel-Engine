@@ -145,6 +145,7 @@ pub struct RenderStats {
     pub drawn_chunks: u32,
     pub frustum_culled_chunks: u32,
     pub occlusion_culled_chunks: u32,
+    pub directional_culled_draws: u32,
     pub opaque_draws: u32,
     pub transparent_draws: u32,
     pub meshing_pending_chunks: u32,

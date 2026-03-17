@@ -671,6 +671,7 @@ impl Renderer {
             format!("DRAWN: {}", stats.drawn_chunks),
             format!("FRUSTUM: {}", stats.frustum_culled_chunks),
             format!("OCCLUDED: {}", stats.occlusion_culled_chunks),
+            format!("DIR: {}", stats.directional_culled_draws),
             format!("OPAQUE: {}", stats.opaque_draws),
             format!("TRANS: {}", stats.transparent_draws),
             format!("MESH: {}", stats.meshing_pending_chunks),
@@ -729,6 +730,7 @@ impl Renderer {
         let mut transparent_draws = Vec::<(f32, DrawMeta)>::with_capacity(2048);
         let mut frustum_culled_chunks = 0u32;
         let mut occlusion_culled_chunks = 0u32;
+        let mut directional_culled_draws = 0u32;
 
         for (&coord, entry) in &self.gpu_entries {
             let origin = coord.world_origin();
@@ -750,8 +752,14 @@ impl Renderer {
             }
 
             for dir in 0..6usize {
+                let faces_camera =
+                    chunk_face_can_face_camera(camera.position, min, max, dir as u32);
                 if let Some(slice) = entry.faces[RenderBucket::Opaque as usize][dir] {
                     if slice.count > 0 {
+                        if !faces_camera {
+                            directional_culled_draws += 1;
+                            continue;
+                        }
                         opaque_draws.push(DrawMeta {
                             chunk_origin: [origin.x, origin.y, origin.z, 0],
                             face_dir: dir as u32,
@@ -764,8 +772,14 @@ impl Renderer {
             }
 
             for dir in 0..6usize {
+                let faces_camera =
+                    chunk_face_can_face_camera(camera.position, min, max, dir as u32);
                 if let Some(slice) = entry.faces[RenderBucket::Transparent as usize][dir] {
                     if slice.count > 0 {
+                        if !faces_camera {
+                            directional_culled_draws += 1;
+                            continue;
+                        }
                         let batch_center = transparent_batch_center(origin, dir as u32);
                         let distance_sq = (batch_center - camera.position).length_squared();
                         transparent_draws.push((
@@ -831,6 +845,7 @@ impl Renderer {
             drawn_chunks,
             frustum_culled_chunks,
             occlusion_culled_chunks,
+            directional_culled_draws,
             opaque_draws: opaque_count as u32,
             transparent_draws: (staged_draws.len() - opaque_count) as u32,
             meshing_pending_chunks: self.mesher.pending_count() as u32,
@@ -1067,6 +1082,25 @@ fn transparent_batch_center(origin: glam::IVec3, face_dir: u32) -> glam::Vec3 {
     }
 }
 
+fn chunk_face_can_face_camera(
+    camera_position: glam::Vec3,
+    chunk_min: glam::Vec3,
+    chunk_max: glam::Vec3,
+    face_dir: u32,
+) -> bool {
+    const FACE_VISIBILITY_EPSILON: f32 = 1.0e-4;
+    const FACE_OFFSET: f32 = 1.0;
+
+    match face_dir {
+        0 => camera_position.x > chunk_min.x + FACE_OFFSET + FACE_VISIBILITY_EPSILON,
+        1 => camera_position.x < chunk_max.x - FACE_OFFSET - FACE_VISIBILITY_EPSILON,
+        2 => camera_position.y > chunk_min.y + FACE_OFFSET + FACE_VISIBILITY_EPSILON,
+        3 => camera_position.y < chunk_max.y - FACE_OFFSET - FACE_VISIBILITY_EPSILON,
+        4 => camera_position.z > chunk_min.z + FACE_OFFSET + FACE_VISIBILITY_EPSILON,
+        _ => camera_position.z < chunk_max.z - FACE_OFFSET - FACE_VISIBILITY_EPSILON,
+    }
+}
+
 fn next_face_capacity(current_capacity: u32, required_faces: u32) -> u32 {
     if current_capacity == 0 {
         return required_faces.max(1);
@@ -1086,7 +1120,7 @@ fn next_face_capacity(current_capacity: u32, required_faces: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::next_face_capacity;
+    use super::{chunk_face_can_face_camera, next_face_capacity};
 
     #[test]
     fn capacity_stays_when_requirement_fits() {
@@ -1101,5 +1135,36 @@ mod tests {
     #[test]
     fn zero_capacity_grows_to_requirement() {
         assert_eq!(next_face_capacity(0, 300), 300);
+    }
+
+    #[test]
+    fn directional_pruning_skips_backside_batches() {
+        let chunk_min = glam::Vec3::ZERO;
+        let chunk_max = glam::Vec3::splat(32.0);
+
+        assert!(!chunk_face_can_face_camera(
+            glam::Vec3::new(-10.0, 10.0, 10.0),
+            chunk_min,
+            chunk_max,
+            0,
+        ));
+        assert!(chunk_face_can_face_camera(
+            glam::Vec3::new(-10.0, 10.0, 10.0),
+            chunk_min,
+            chunk_max,
+            1,
+        ));
+    }
+
+    #[test]
+    fn directional_pruning_keeps_both_sides_when_camera_is_inside_chunk() {
+        let chunk_min = glam::Vec3::ZERO;
+        let chunk_max = glam::Vec3::splat(32.0);
+        let camera = glam::Vec3::splat(16.0);
+
+        assert!(chunk_face_can_face_camera(camera, chunk_min, chunk_max, 0));
+        assert!(chunk_face_can_face_camera(camera, chunk_min, chunk_max, 1));
+        assert!(chunk_face_can_face_camera(camera, chunk_min, chunk_max, 2));
+        assert!(chunk_face_can_face_camera(camera, chunk_min, chunk_max, 3));
     }
 }
