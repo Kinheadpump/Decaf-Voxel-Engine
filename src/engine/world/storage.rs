@@ -3,7 +3,7 @@ use ahash::AHashMap;
 use crate::engine::{
     core::{
         math::{IVec3, UVec3},
-        types::CHUNK_SIZE,
+        types::{CHUNK_SIZE, FaceDir},
     },
     world::{
         block::id::BlockId, chunk::Chunk, coord::ChunkCoord, mesher::ChunkMeshDirtyRegion,
@@ -48,6 +48,7 @@ impl World {
     pub fn insert_chunk(&mut self, coord: ChunkCoord, chunk: Chunk) {
         self.chunks.insert(coord, chunk);
         self.mark_dirty(coord);
+        self.mark_adjacent_chunk_borders_dirty(coord);
     }
 
     pub fn contains_chunk(&self, coord: ChunkCoord) -> bool {
@@ -57,7 +58,9 @@ impl World {
     pub fn remove_chunk(&mut self, coord: ChunkCoord) -> Option<Chunk> {
         self.dirty_regions.remove(&coord);
         self.dirty_queue.retain(|queued| *queued != coord);
-        self.chunks.remove(&coord)
+        let removed = self.chunks.remove(&coord)?;
+        self.mark_adjacent_chunk_borders_dirty(coord);
+        Some(removed)
     }
 
     pub fn set_block_world(&mut self, p: IVec3, block_id: BlockId) -> bool {
@@ -130,6 +133,28 @@ impl World {
             mark_if_loaded(IVec3::new(0, 0, 1), UVec3::new(local.x, local.y, 0), self);
         }
     }
+
+    fn mark_adjacent_chunk_borders_dirty(&mut self, coord: ChunkCoord) {
+        let edge = CHUNK_SIZE - 1;
+        let adjacent_faces = [
+            (IVec3::new(1, 0, 0), FaceDir::NegX, 0),
+            (IVec3::new(-1, 0, 0), FaceDir::PosX, edge),
+            (IVec3::new(0, 1, 0), FaceDir::NegY, 0),
+            (IVec3::new(0, -1, 0), FaceDir::PosY, edge),
+            (IVec3::new(0, 0, 1), FaceDir::NegZ, 0),
+            (IVec3::new(0, 0, -1), FaceDir::PosZ, edge),
+        ];
+
+        for (delta, neighbor_face, depth) in adjacent_faces {
+            let neighbor = coord.offset(delta);
+            if self.chunks.contains_key(&neighbor) {
+                self.mark_dirty_region(
+                    neighbor,
+                    ChunkMeshDirtyRegion::from_face_slice(neighbor_face, depth),
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -151,6 +176,33 @@ mod tests {
         let dirty = world.take_dirty();
         assert!(dirty.iter().any(|entry| entry.coord == center));
         assert!(dirty.iter().any(|entry| entry.coord == east));
+    }
+
+    #[test]
+    fn inserting_chunk_marks_loaded_neighbor_border_dirty() {
+        let mut world = World::new();
+        let center = ChunkCoord(IVec3::new(0, 0, 0));
+        let east = ChunkCoord(IVec3::new(1, 0, 0));
+
+        world.insert_chunk(center, Chunk::new());
+        let _ = world.take_dirty();
+
+        world.insert_chunk(east, Chunk::new());
+
+        let dirty = world.take_dirty();
+        let center_entry = dirty
+            .iter()
+            .find(|entry| entry.coord == center)
+            .copied()
+            .expect("center chunk should be dirtied when east neighbor appears");
+        let east_entry = dirty
+            .iter()
+            .find(|entry| entry.coord == east)
+            .copied()
+            .expect("new chunk should be dirty after insertion");
+
+        assert_eq!(east_entry.coord, east);
+        assert!(center_entry.region.touches(FaceDir::PosX, CHUNK_SIZE - 1));
     }
 
     #[test]
@@ -179,5 +231,23 @@ mod tests {
 
         assert!(world.take_dirty().is_empty());
         assert!(!world.contains_chunk(center));
+    }
+
+    #[test]
+    fn removing_chunk_marks_loaded_neighbor_border_dirty() {
+        let mut world = World::new();
+        let center = ChunkCoord(IVec3::new(0, 0, 0));
+        let east = ChunkCoord(IVec3::new(1, 0, 0));
+
+        world.insert_chunk(center, Chunk::new());
+        world.insert_chunk(east, Chunk::new());
+        let _ = world.take_dirty();
+
+        assert!(world.remove_chunk(east).is_some());
+
+        let dirty = world.take_dirty();
+        assert_eq!(dirty.len(), 1);
+        assert_eq!(dirty[0].coord, center);
+        assert!(dirty[0].region.touches(FaceDir::PosX, CHUNK_SIZE - 1));
     }
 }

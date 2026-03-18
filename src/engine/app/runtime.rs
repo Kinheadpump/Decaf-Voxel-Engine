@@ -33,7 +33,7 @@ use crate::{
 
 use super::{
     fps::FpsCounter,
-    spawn::spawn_position_at_world_origin,
+    spawn::spawn_position_near_world_origin,
     streaming::{WorldStreamer, meshing_focus_from_player},
 };
 
@@ -81,7 +81,8 @@ impl AppRuntime {
             world_config.terrain,
             biomes,
         ));
-        let spawn_position = spawn_position_at_world_origin(&staged_generator, &player_config);
+        let spawn_position =
+            spawn_position_near_world_origin(&staged_generator, &world_config, &player_config);
         let chunk_generator: Arc<dyn ChunkGenerator> = staged_generator.clone();
         let mut streamer = WorldStreamer::new(
             chunk_generator,

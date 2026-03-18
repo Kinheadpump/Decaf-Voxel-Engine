@@ -169,6 +169,7 @@ impl Default for HiZOcclusionConfig {
 pub struct WorldConfig {
     pub seed: u64,
     pub biomes_file: String,
+    pub spawn_search_attempts: u32,
     pub terrain: TerrainConfig,
 }
 
@@ -177,6 +178,7 @@ impl Default for WorldConfig {
         Self {
             seed: 12345,
             biomes_file: "biomes.toml".to_string(),
+            spawn_search_attempts: 10,
             terrain: TerrainConfig::default(),
         }
     }

@@ -69,6 +69,7 @@ fly_friction = 10.0
 [world]
 seed = 3141592653589793
 biomes_file = "biomes.toml"
+spawn_search_attempts = 10
 
 [world.terrain]
 sea_level = 0

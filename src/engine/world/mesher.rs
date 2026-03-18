@@ -31,6 +31,12 @@ impl ChunkMeshDirtyRegion {
         Self { full: true, slice_masks: [0; 6] }
     }
 
+    pub fn from_face_slice(dir: FaceDir, depth: usize) -> Self {
+        let mut region = Self::default();
+        region.mark_slice(dir, depth);
+        region
+    }
+
     pub fn from_local_voxel(local: UVec3) -> Self {
         let mut region = Self::default();
         region.mark_local_voxel(local);
