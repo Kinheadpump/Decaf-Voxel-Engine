@@ -101,6 +101,12 @@ impl Player {
     }
 }
 
-pub fn camera_from_player(player: &Player, aspect: f32, camera_config: &CameraConfig) -> Camera {
-    Camera::from_config(player.eye_position(), player.forward_3d(), aspect, camera_config)
+pub fn camera_from_player(
+    player: &Player,
+    aspect: f32,
+    camera_config: &CameraConfig,
+    zoom_active: bool,
+) -> Camera {
+    let camera_config = camera_config.for_zoom_state(zoom_active);
+    Camera::from_config(player.eye_position(), player.forward_3d(), aspect, &camera_config)
 }

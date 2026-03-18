@@ -175,7 +175,9 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             if let WindowEvent::RedrawRequested = event {
                 let aspect =
                     renderer.surface_config.width as f32 / renderer.surface_config.height as f32;
-                let camera = camera_from_player(&player, aspect, &render_config.camera);
+                let zoom_active = zoom_active(&input);
+                let camera =
+                    camera_from_player(&player, aspect, &render_config.camera, zoom_active);
                 let player_voxel = player.position.floor().as_ivec3();
                 let player_chunk =
                     crate::engine::world::coord::ChunkCoord::from_world_voxel(player_voxel).0;
@@ -209,6 +211,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
 
         Event::AboutToWait => {
             if input.cursor_grabbed {
+                let zoom_active = zoom_active(&input);
                 update_player(
                     &mut player,
                     &input,
@@ -216,6 +219,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
                     &renderer.resolved_blocks,
                     total_time,
                     &player_config,
+                    zoom_active,
                 );
 
                 let interaction_origin = player.eye_position();
@@ -290,6 +294,10 @@ fn release_cursor(window: &Window, input: &mut InputState) {
     let _ = window.set_cursor_grab(CursorGrabMode::None);
     window.set_cursor_visible(true);
     input.cursor_grabbed = false;
+}
+
+fn zoom_active(input: &InputState) -> bool {
+    input.cursor_grabbed && input.key_held(KeyCode::KeyC)
 }
 
 fn background_worker_counts(render_config: &RenderConfig) -> (usize, usize) {

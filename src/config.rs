@@ -78,12 +78,23 @@ impl Default for RenderConfig {
 #[serde(default)]
 pub struct CameraConfig {
     pub fov_y_degrees: f32,
+    pub zoom_fov_y_degrees: f32,
     pub near_plane: f32,
 }
 
 impl Default for CameraConfig {
     fn default() -> Self {
-        Self { fov_y_degrees: 70.0, near_plane: 0.1 }
+        Self { fov_y_degrees: 70.0, zoom_fov_y_degrees: 30.0, near_plane: 0.1 }
+    }
+}
+
+impl CameraConfig {
+    #[inline]
+    pub fn for_zoom_state(&self, zoom_active: bool) -> Self {
+        Self {
+            fov_y_degrees: if zoom_active { self.zoom_fov_y_degrees } else { self.fov_y_degrees },
+            ..*self
+        }
     }
 }
 
@@ -291,6 +302,7 @@ impl Default for ContinentalRegionConfig {
 pub struct PlayerConfig {
     pub reach_distance: f32,
     pub mouse_sensitivity: f32,
+    pub zoom_mouse_sensitivity_multiplier: f32,
     pub eye_height: f32,
     pub radius: f32,
     pub height: f32,
@@ -315,6 +327,7 @@ impl Default for PlayerConfig {
         Self {
             reach_distance: 6.0,
             mouse_sensitivity: 0.0022,
+            zoom_mouse_sensitivity_multiplier: 0.45,
             eye_height: 1.62,
             radius: 0.3,
             height: 1.8,
@@ -332,6 +345,17 @@ impl Default for PlayerConfig {
             fly_sprint_multiplier: 2.5,
             fly_accel: 24.0,
             fly_friction: 10.0,
+        }
+    }
+}
+
+impl PlayerConfig {
+    #[inline]
+    pub fn look_sensitivity(&self, zoom_active: bool) -> f32 {
+        if zoom_active {
+            self.mouse_sensitivity * self.zoom_mouse_sensitivity_multiplier
+        } else {
+            self.mouse_sensitivity
         }
     }
 }

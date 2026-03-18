@@ -18,6 +18,7 @@ max_visible_draws = 32768
 
 [render.camera]
 fov_y_degrees = 70.0
+zoom_fov_y_degrees = 10.0
 near_plane = 0.1
 
 [render.clear_color]
@@ -45,7 +46,8 @@ occlusion_depth_bias = 0.0001
 
 [player]
 reach_distance = 6.0
-mouse_sensitivity = 0.0022
+mouse_sensitivity = 0.0008
+zoom_mouse_sensitivity_multiplier = 0.3
 eye_height = 1.62
 radius = 0.3
 height = 1.8
@@ -65,7 +67,7 @@ fly_accel = 24.0
 fly_friction = 10.0
 
 [world]
-seed = 12345
+seed = 3141592653589793
 biomes_file = "biomes.toml"
 
 [world.terrain]
