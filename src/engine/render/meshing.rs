@@ -113,6 +113,7 @@ pub struct ThreadedMesher {
     job_tx: Option<Sender<MeshJob>>,
     result_rx: Receiver<WorkerMeshResult>,
     pending_jobs: AHashMap<ChunkCoord, PendingJob>,
+    deferred_dirty: AHashMap<ChunkCoord, ChunkMeshDirtyRegion>,
     mesh_caches: AHashMap<ChunkCoord, ChunkMeshSlices>,
     next_request_id: u64,
     workers: Vec<JoinHandle<()>>,
@@ -146,32 +147,67 @@ impl ThreadedMesher {
             job_tx: Some(job_tx),
             result_rx,
             pending_jobs: AHashMap::new(),
+            deferred_dirty: AHashMap::new(),
             mesh_caches: AHashMap::new(),
             next_request_id: 1,
             workers,
         }
     }
 
-    pub fn enqueue_dirty(&mut self, world: &mut World, focus: MeshingFocus) -> anyhow::Result<()> {
+    pub fn enqueue_dirty(
+        &mut self,
+        world: &mut World,
+        focus: MeshingFocus,
+        enqueue_budget: usize,
+    ) -> anyhow::Result<usize> {
         let Some(job_tx) = &self.job_tx else {
             anyhow::bail!("meshing workers are unavailable");
         };
 
-        let mut dirty = world.take_dirty();
+        for entry in world.take_dirty() {
+            if let Some(existing) = self.deferred_dirty.get_mut(&entry.coord) {
+                existing.merge(entry.region);
+            } else {
+                self.deferred_dirty.insert(entry.coord, entry.region);
+            }
+        }
+
+        if self.deferred_dirty.is_empty() {
+            return Ok(0);
+        }
+
+        let enqueue_budget = if enqueue_budget == 0 { usize::MAX } else { enqueue_budget };
+        let mut dirty: Vec<_> = self
+            .deferred_dirty
+            .iter()
+            .map(|(&coord, &region)| DirtyChunkEntry { coord, region })
+            .collect();
         sort_dirty_chunk_entries_by_priority(&mut dirty, focus);
+        let mut queued_chunk_count = 0usize;
 
         for entry in dirty {
+            if queued_chunk_count >= enqueue_budget {
+                break;
+            }
+
             let coord = entry.coord;
+            if self.pending_jobs.contains_key(&coord) {
+                continue;
+            }
+
+            let Some(region) = self.deferred_dirty.remove(&coord) else {
+                continue;
+            };
             let Some(snapshot) = ChunkMeshingSnapshot::capture(world, coord) else {
                 self.pending_jobs.remove(&coord);
+                self.deferred_dirty.remove(&coord);
                 self.mesh_caches.remove(&coord);
                 continue;
             };
 
             let generation = snapshot.generation;
-            let full_rebuild = entry.region.is_full() || !self.mesh_caches.contains_key(&coord);
-            let dirty_region =
-                if full_rebuild { ChunkMeshDirtyRegion::full() } else { entry.region };
+            let full_rebuild = region.is_full() || !self.mesh_caches.contains_key(&coord);
+            let dirty_region = if full_rebuild { ChunkMeshDirtyRegion::full() } else { region };
             let previous_mesh =
                 if full_rebuild { None } else { self.mesh_caches.get(&coord).cloned() };
 
@@ -181,28 +217,43 @@ impl ThreadedMesher {
             job_tx
                 .send(MeshJob { request_id, dirty_region, previous_mesh, snapshot })
                 .context("failed to send chunk meshing job to worker thread")?;
+            queued_chunk_count += 1;
         }
 
-        Ok(())
+        Ok(queued_chunk_count)
     }
 
     pub fn cancel(&mut self, coord: ChunkCoord) {
         self.pending_jobs.remove(&coord);
+        self.deferred_dirty.remove(&coord);
         self.mesh_caches.remove(&coord);
     }
 
-    pub fn has_pending(&self) -> bool {
+    pub fn has_pending_work(&self) -> bool {
+        !self.pending_jobs.is_empty() || !self.deferred_dirty.is_empty()
+    }
+
+    pub fn has_inflight_jobs(&self) -> bool {
         !self.pending_jobs.is_empty()
     }
 
     pub fn pending_count(&self) -> usize {
         self.pending_jobs.len()
+            + self
+                .deferred_dirty
+                .keys()
+                .filter(|coord| !self.pending_jobs.contains_key(coord))
+                .count()
     }
 
-    pub fn try_take_ready(&mut self) -> Vec<MeshResult> {
+    pub fn try_take_ready_limit(&mut self, max_results: usize) -> Vec<MeshResult> {
         let mut ready = Vec::new();
+        let max_results = if max_results == 0 { usize::MAX } else { max_results };
 
-        while let Ok(result) = self.result_rx.try_recv() {
+        while ready.len() < max_results {
+            let Ok(result) = self.result_rx.try_recv() else {
+                break;
+            };
             if let Some(result) = self.accept_result(result) {
                 ready.push(result);
             }
@@ -324,7 +375,31 @@ fn chunk_priority_key(coord: ChunkCoord, focus: MeshingFocus) -> (i32, i32, i32,
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
+    use crate::engine::world::{
+        block::create_default_block_registry, chunk::Chunk, storage::World,
+    };
+
     use super::*;
+
+    fn test_resolved_blocks() -> ResolvedBlockRegistry {
+        let registry = create_default_block_registry();
+        let mut texture_layers = HashMap::new();
+        let mut next_layer = 0u16;
+
+        for definition in registry.iter() {
+            definition.textures.visit_refs(|texture_ref| {
+                texture_layers.entry(texture_ref.0.clone()).or_insert_with(|| {
+                    let layer = next_layer;
+                    next_layer += 1;
+                    layer
+                });
+            });
+        }
+
+        ResolvedBlockRegistry::build(&registry, &texture_layers)
+    }
 
     #[test]
     fn priority_prefers_nearby_chunks() {
@@ -344,5 +419,20 @@ mod tests {
         sort_chunk_coords_by_priority(&mut coords, focus);
 
         assert_eq!(coords[0], ChunkCoord(IVec3::new(0, 0, 1)));
+    }
+
+    #[test]
+    fn enqueue_dirty_defers_chunks_that_already_have_inflight_jobs() -> anyhow::Result<()> {
+        let mut mesher = ThreadedMesher::new(test_resolved_blocks(), 1);
+        let coord = ChunkCoord(IVec3::ZERO);
+        let mut world = World::new();
+        world.insert_chunk(coord, Chunk::new());
+
+        mesher.pending_jobs.insert(coord, PendingJob { request_id: 7, generation: 0 });
+        let _ = mesher.enqueue_dirty(&mut world, MeshingFocus::new(coord, Vec3::Z), 8)?;
+
+        assert_eq!(mesher.pending_jobs[&coord].request_id, 7);
+        assert!(mesher.deferred_dirty.contains_key(&coord));
+        Ok(())
     }
 }

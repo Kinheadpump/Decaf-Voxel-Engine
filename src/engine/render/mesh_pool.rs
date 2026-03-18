@@ -44,33 +44,32 @@ impl MeshPool {
     }
 
     pub fn free(&mut self, offset: u32, count: u32) {
-        self.free.push((offset, count));
-        self.free.sort_by_key(|&(o, _)| o);
-        self.coalesce();
+        let insert_at = self
+            .free
+            .binary_search_by_key(&offset, |&(existing_offset, _)| existing_offset)
+            .unwrap_or_else(|index| index);
+        self.free.insert(insert_at, (offset, count));
+
+        let mut merged_index = insert_at;
+        if merged_index > 0 {
+            let previous = self.free[merged_index - 1];
+            if previous.0 + previous.1 == self.free[merged_index].0 {
+                self.free[merged_index - 1].1 += self.free[merged_index].1;
+                self.free.remove(merged_index);
+                merged_index -= 1;
+            }
+        }
+
+        if merged_index + 1 < self.free.len() {
+            let next = self.free[merged_index + 1];
+            if self.free[merged_index].0 + self.free[merged_index].1 == next.0 {
+                self.free[merged_index].1 += next.1;
+                self.free.remove(merged_index + 1);
+            }
+        }
     }
 
     pub fn total_free_faces(&self) -> u32 {
         self.free.iter().map(|&(_, count)| count).sum()
-    }
-
-    fn coalesce(&mut self) {
-        if self.free.is_empty() {
-            return;
-        }
-
-        let mut out = Vec::with_capacity(self.free.len());
-        let mut cur = self.free[0];
-
-        for &(off, cnt) in &self.free[1..] {
-            if cur.0 + cur.1 == off {
-                cur.1 += cnt;
-            } else {
-                out.push(cur);
-                cur = (off, cnt);
-            }
-        }
-
-        out.push(cur);
-        self.free = out;
     }
 }

@@ -22,6 +22,7 @@ use crate::{
             renderer::Renderer,
         },
         world::{
+            accessor::VoxelAccessor,
             biome::BiomeTable,
             block::{create_default_block_registry, id::BlockId, resolved::ResolvedBlockRegistry},
             generator::{ChunkGenerator, StagedGenerator},
@@ -43,6 +44,7 @@ pub(super) struct AppRuntime {
     render_radius_xz: i32,
     render_radius_y: i32,
     generation_budget_per_frame: usize,
+    completed_generation_budget_per_frame: usize,
     staged_generator: Arc<StagedGenerator>,
     streamer: WorldStreamer,
     renderer: Renderer,
@@ -53,6 +55,7 @@ pub(super) struct AppRuntime {
     fps_counter: FpsCounter,
     show_debug_overlay: bool,
     placement_block_id: BlockId,
+    water_block_id: BlockId,
 }
 
 impl AppRuntime {
@@ -68,6 +71,7 @@ impl AppRuntime {
         let startup_preload_radius_y =
             render_config.startup_preload_radius_y.clamp(0, render_radius_y);
         let generation_budget_per_frame = render_config.stream_generation_budget;
+        let completed_generation_budget_per_frame = render_config.stream_completed_chunk_budget;
         let stream_max_inflight_generations = render_config.stream_max_inflight_generations;
         let (generation_worker_count, meshing_worker_count) =
             resolve_background_worker_counts(&render_config);
@@ -128,6 +132,7 @@ impl AppRuntime {
             render_radius_xz,
             render_radius_y,
             generation_budget_per_frame,
+            completed_generation_budget_per_frame,
             staged_generator,
             streamer,
             renderer,
@@ -138,6 +143,7 @@ impl AppRuntime {
             fps_counter: FpsCounter::new(),
             show_debug_overlay: false,
             placement_block_id,
+            water_block_id,
         })
     }
 
@@ -242,8 +248,10 @@ impl AppRuntime {
             self.zoom_active(),
         );
         let debug_overlay = self.show_debug_overlay.then(|| self.build_debug_overlay_input());
+        let underwater_tint_active = self.player_eye_in_water();
 
         self.renderer.set_debug_overlay(debug_overlay);
+        self.renderer.set_underwater_tint_active(underwater_tint_active);
 
         if let Err(err) = self.renderer.render(&camera) {
             crate::log_error!("render failed: {err:#}");
@@ -336,6 +344,7 @@ impl AppRuntime {
             self.render_radius_xz,
             self.render_radius_y,
             self.generation_budget_per_frame,
+            self.completed_generation_budget_per_frame,
         )?;
         self.renderer.pump_meshing(&mut self.world, meshing_focus)?;
         Ok(())
@@ -343,6 +352,12 @@ impl AppRuntime {
 
     fn zoom_active(&self) -> bool {
         self.input.cursor_grabbed && self.input.key_held(KeyCode::KeyC)
+    }
+
+    fn player_eye_in_water(&self) -> bool {
+        let eye_voxel = self.player.eye_position().floor().as_ivec3();
+        VoxelAccessor { world: &self.world }.get_world_voxel(eye_voxel).block_id()
+            == self.water_block_id
     }
 }
 

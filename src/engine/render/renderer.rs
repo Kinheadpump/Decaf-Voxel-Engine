@@ -31,7 +31,10 @@ use crate::{
 
 use self::{
     draw::{build_draw_ref_bytes, next_face_capacity, transparent_batch_center},
-    pipelines::{create_overlay_pipeline, create_voxel_pipeline, create_wireframe_pipeline},
+    pipelines::{
+        create_overlay_pipeline, create_screen_tint_pipeline, create_voxel_pipeline,
+        create_wireframe_pipeline,
+    },
 };
 
 pub struct Renderer {
@@ -66,6 +69,7 @@ pub struct Renderer {
     pub transparent_pipeline: wgpu::RenderPipeline,
     pub wireframe_pipeline: wgpu::RenderPipeline,
     pub overlay_pipeline: wgpu::RenderPipeline,
+    pub underwater_tint_pipeline: wgpu::RenderPipeline,
     pub hiz_occlusion: Option<HiZOcclusion>,
     pub mesher: ThreadedMesher,
     pub resolved_blocks: ResolvedBlockRegistry,
@@ -74,6 +78,9 @@ pub struct Renderer {
     pub debug_overlay: Option<DebugOverlayInput>,
     pub last_frame_stats: RenderStats,
     pub use_multi_draw_indirect: bool,
+    underwater_tint_active: bool,
+    meshing_enqueue_budget: usize,
+    mesh_upload_budget: usize,
     max_visible_draws: usize,
     overlay_config: OverlayConfig,
     clear_color: ClearColorConfig,
@@ -438,6 +445,12 @@ impl Renderer {
                 bind_group_layouts: &[&overlay_bgl],
                 push_constant_ranges: &[],
             });
+        let screen_tint_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("screen_tint_pipeline_layout"),
+                bind_group_layouts: &[],
+                push_constant_ranges: &[],
+            });
 
         let opaque_pipeline = create_voxel_pipeline(
             &device,
@@ -471,6 +484,17 @@ impl Renderer {
             &device,
             &overlay_pipeline_layout,
             &overlay_shader,
+            surface_config.format,
+            depth_target.format,
+        );
+        let underwater_tint_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("underwater_tint_shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("underwater_tint.wgsl").into()),
+        });
+        let underwater_tint_pipeline = create_screen_tint_pipeline(
+            &device,
+            &screen_tint_pipeline_layout,
+            &underwater_tint_shader,
             surface_config.format,
             depth_target.format,
         );
@@ -508,6 +532,7 @@ impl Renderer {
             transparent_pipeline,
             wireframe_pipeline,
             overlay_pipeline,
+            underwater_tint_pipeline,
             hiz_occlusion,
             mesher,
             resolved_blocks,
@@ -519,6 +544,9 @@ impl Renderer {
                 ..Default::default()
             },
             use_multi_draw_indirect,
+            underwater_tint_active: false,
+            meshing_enqueue_budget: render_config.meshing_enqueue_budget,
+            mesh_upload_budget: render_config.mesh_upload_budget,
             max_visible_draws,
             overlay_config: render_config.overlay,
             clear_color: render_config.clear_color,
@@ -536,6 +564,10 @@ impl Renderer {
 
     pub fn set_debug_overlay(&mut self, overlay: Option<DebugOverlayInput>) {
         self.debug_overlay = overlay;
+    }
+
+    pub fn set_underwater_tint_active(&mut self, active: bool) {
+        self.underwater_tint_active = active;
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -559,11 +591,10 @@ impl Renderer {
     pub fn pump_meshing(&mut self, world: &mut World, focus: MeshingFocus) -> anyhow::Result<()> {
         let _span = crate::profile_span!("renderer::pump_meshing");
 
-        self.mesher.enqueue_dirty(world, focus)?;
-
-        for result in self.mesher.try_take_ready() {
+        for result in self.mesher.try_take_ready_limit(self.mesh_upload_budget) {
             self.upload_chunk_mesh(result.coord, result.mesh)?;
         }
+        self.mesher.enqueue_dirty(world, focus, self.meshing_enqueue_budget)?;
 
         Ok(())
     }
@@ -571,12 +602,14 @@ impl Renderer {
     pub fn finish_meshing(&mut self, world: &mut World, focus: MeshingFocus) -> anyhow::Result<()> {
         let _span = crate::profile_span!("renderer::finish_meshing");
 
-        self.pump_meshing(world, focus)?;
+        self.mesher.enqueue_dirty(world, focus, 0)?;
 
-        while self.mesher.has_pending() {
-            let result = self.mesher.recv_ready()?;
-            self.upload_chunk_mesh(result.coord, result.mesh)?;
-            self.mesher.enqueue_dirty(world, focus)?;
+        while self.mesher.has_pending_work() {
+            if self.mesher.has_inflight_jobs() {
+                let result = self.mesher.recv_ready()?;
+                self.upload_chunk_mesh(result.coord, result.mesh)?;
+            }
+            self.mesher.enqueue_dirty(world, focus, 0)?;
         }
 
         Ok(())
@@ -832,6 +865,12 @@ impl Renderer {
                         }
                     }
                 }
+            }
+
+            if self.underwater_tint_active {
+                pass.set_pipeline(&self.underwater_tint_pipeline);
+                pass.set_vertex_buffer(0, self.base_quad_buffer.slice(..));
+                pass.draw(0..4, 0..1);
             }
 
             if !overlay_instances.is_empty() {

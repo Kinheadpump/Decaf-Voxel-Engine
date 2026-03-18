@@ -100,10 +100,14 @@ impl ThreadedGenerator {
         self.pending_jobs.len()
     }
 
-    pub fn try_take_ready(&mut self) -> Vec<GenerationResult> {
+    pub fn try_take_ready_limit(&mut self, max_results: usize) -> Vec<GenerationResult> {
         let mut ready = Vec::new();
+        let max_results = if max_results == 0 { usize::MAX } else { max_results };
 
-        while let Ok(result) = self.result_rx.try_recv() {
+        while ready.len() < max_results {
+            let Ok(result) = self.result_rx.try_recv() else {
+                break;
+            };
             if let Some(result) = self.accept_result(result) {
                 ready.push(result);
             }

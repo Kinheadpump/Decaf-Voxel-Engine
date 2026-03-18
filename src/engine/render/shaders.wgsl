@@ -214,6 +214,18 @@ fn apply_face_tint(base_color: vec3<f32>, tint_packed: u32) -> vec3<f32> {
     return base_color;
 }
 
+fn face_shade(normal: vec3<f32>) -> f32 {
+    if normal.y > 0.5 {
+        return 1.0;
+    }
+
+    if normal.y < -0.5 {
+        return 0.72;
+    }
+
+    return 0.86;
+}
+
 @vertex
 fn vs_main(in: VsIn) -> VsOut {
     let draw_meta_index = active_draw_meta_index(in.instance_index);
@@ -269,9 +281,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         default {}
     }
 
-    let light_dir = normalize(vec3<f32>(0.7, 1.0, 0.5));
-    let diffuse = max(dot(in.normal, light_dir), 0.18);
     let sample_uv = vec2<f32>(fract(in.tex_uv.x), fract(1.0 - in.tex_uv.y));
     let color = textureSample(tex_array, tex_sampler, sample_uv, i32(in.tex_id));
-    return vec4<f32>(apply_face_tint(color.rgb, in.tint_packed) * diffuse, color.a);
+    return vec4<f32>(apply_face_tint(color.rgb, in.tint_packed) * face_shade(in.normal), color.a);
 }

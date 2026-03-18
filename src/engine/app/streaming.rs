@@ -48,13 +48,15 @@ impl WorldStreamer {
         render_radius_xz: i32,
         render_radius_y: i32,
         generation_budget: usize,
+        completed_chunk_budget: usize,
     ) -> anyhow::Result<()> {
         let desired_coords =
             chunk_coords_in_render_radius(focus, render_radius_xz, render_radius_y);
         let desired_set: AHashSet<_> = desired_coords.iter().copied().collect();
 
         let unloaded_chunk_count = self.prune_unwanted(world, renderer, &desired_set);
-        let generated_chunk_count = self.drain_ready_results(world, &desired_set);
+        let generated_chunk_count =
+            self.drain_ready_results(world, &desired_set, completed_chunk_budget);
         let queued_chunk_count =
             self.enqueue_missing_chunks(world, &desired_coords, generation_budget)?;
         self.desired_coords = desired_set;
@@ -87,7 +89,7 @@ impl WorldStreamer {
         let desired_set: AHashSet<_> = desired_coords.iter().copied().collect();
 
         self.prune_unwanted(world, None, &desired_set);
-        self.drain_ready_results(world, &desired_set);
+        self.drain_ready_results(world, &desired_set, 0);
         self.enqueue_missing_chunks(world, &desired_coords, generation_budget)?;
 
         while desired_coords.iter().any(|coord| !world.contains_chunk(*coord)) {
@@ -129,10 +131,14 @@ impl WorldStreamer {
         &mut self,
         world: &mut World,
         desired_set: &AHashSet<ChunkCoord>,
+        completed_chunk_budget: usize,
     ) -> usize {
         let mut generated_chunk_count = 0usize;
 
-        for result in self.generator.try_take_ready() {
+        let completed_chunk_budget =
+            if completed_chunk_budget == 0 { usize::MAX } else { completed_chunk_budget };
+
+        for result in self.generator.try_take_ready_limit(completed_chunk_budget) {
             generated_chunk_count +=
                 usize::from(self.insert_generated_chunk(world, desired_set, result));
         }

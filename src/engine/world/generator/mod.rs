@@ -159,8 +159,13 @@ impl StagedGenerator {
                 for local_y in (0..CHUNK_SIZE).rev() {
                     let world_y = origin.y + local_y as i32;
                     let voxel = if solid_mask[voxel_index(local_x, local_y, local_z)] {
-                        let top_exposed = !self.is_solid(column, world_x, world_y + 1, world_z);
-                        let submerged_surface = top_exposed && world_y <= self.terrain.sea_level;
+                        let solid_above = if local_y + 1 < CHUNK_SIZE {
+                            solid_mask[voxel_index(local_x, local_y + 1, local_z)]
+                        } else {
+                            self.is_solid(column, world_x, world_y + 1, world_z)
+                        };
+                        let top_exposed = !solid_above;
+                        let submerged_surface = top_exposed && world_y < self.terrain.sea_level;
 
                         if top_exposed {
                             material_depth = if submerged_surface {

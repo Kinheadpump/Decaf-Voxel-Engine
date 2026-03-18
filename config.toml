@@ -8,12 +8,15 @@ height = 720
 [render]
 render_radius_xz = 12
 render_radius_y = 4
-startup_preload_radius_xz = 1
-startup_preload_radius_y = 1
+startup_preload_radius_xz = 0
+startup_preload_radius_y = 0
 stream_generation_budget = 16
+stream_completed_chunk_budget = 8
 stream_max_inflight_generations = 64
 generation_worker_count = 0
 meshing_worker_count = 0
+meshing_enqueue_budget = 8
+mesh_upload_budget = 6
 enable_hiz_occlusion = false
 initial_face_capacity = 4000000
 max_visible_draws = 32768
