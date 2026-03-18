@@ -34,6 +34,7 @@ struct ColumnSample {
     surface_block: BlockId,
     soil_block: BlockId,
     deep_block: BlockId,
+    ocean_floor_block: BlockId,
     grass_color: [u8; 3],
     foliage_color: [u8; 3],
 }
@@ -158,11 +159,19 @@ impl StagedGenerator {
                 for local_y in (0..CHUNK_SIZE).rev() {
                     let world_y = origin.y + local_y as i32;
                     let voxel = if solid_mask[voxel_index(local_x, local_y, local_z)] {
-                        if !self.is_solid(column, world_x, world_y + 1, world_z) {
-                            material_depth = (world_y >= surface_material_min_y).then_some(0);
+                        let top_exposed = !self.is_solid(column, world_x, world_y + 1, world_z);
+                        let submerged_surface = top_exposed && world_y <= self.terrain.sea_level;
+
+                        if top_exposed {
+                            material_depth = if submerged_surface {
+                                Some(0)
+                            } else {
+                                (world_y >= surface_material_min_y).then_some(0)
+                            };
                         }
 
                         let block_id = match material_depth {
+                            Some(0) if submerged_surface => column.ocean_floor_block,
                             Some(0) => column.surface_block,
                             Some(depth) if depth <= dirt_depth => column.soil_block,
                             _ => column.deep_block,
@@ -238,6 +247,7 @@ impl StagedGenerator {
             surface_block: surface.biome.dominant.surface_block,
             soil_block: surface.biome.dominant.soil_block,
             deep_block: surface.biome.dominant.deep_block,
+            ocean_floor_block: surface.biome.dominant.ocean_floor_block,
             grass_color: surface.biome.dominant.grass_color,
             foliage_color: surface.biome.dominant.foliage_color,
         }
@@ -405,6 +415,7 @@ impl StagedGenerator {
             surface_block: surface.biome.dominant.surface_block,
             soil_block: surface.biome.dominant.soil_block,
             deep_block: surface.biome.dominant.deep_block,
+            ocean_floor_block: surface.biome.dominant.ocean_floor_block,
             grass_color: surface.biome.dominant.grass_color,
             foliage_color: surface.biome.dominant.foliage_color,
         };

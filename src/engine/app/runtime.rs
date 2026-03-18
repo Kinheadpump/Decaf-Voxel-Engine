@@ -63,6 +63,10 @@ impl AppRuntime {
 
         let render_radius_xz = render_config.render_radius_xz.max(0);
         let render_radius_y = render_config.render_radius_y.max(0);
+        let startup_preload_radius_xz =
+            render_config.startup_preload_radius_xz.clamp(0, render_radius_xz);
+        let startup_preload_radius_y =
+            render_config.startup_preload_radius_y.clamp(0, render_radius_y);
         let generation_budget_per_frame = render_config.stream_generation_budget;
         let stream_max_inflight_generations = render_config.stream_max_inflight_generations;
         let (generation_worker_count, meshing_worker_count) =
@@ -103,8 +107,8 @@ impl AppRuntime {
         streamer.finish_generation(
             &mut world,
             initial_focus,
-            render_radius_xz,
-            render_radius_y,
+            startup_preload_radius_xz,
+            startup_preload_radius_y,
             0,
         )?;
 

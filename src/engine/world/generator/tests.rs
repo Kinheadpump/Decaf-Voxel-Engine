@@ -169,6 +169,7 @@ fn density_function_can_create_hollow_columns() {
         surface_block: BlockId(1),
         soil_block: BlockId(2),
         deep_block: BlockId(3),
+        ocean_floor_block: BlockId(2),
         grass_color: [255, 255, 255],
         foliage_color: [255, 255, 255],
     };
@@ -354,6 +355,37 @@ fn river_valleys_can_drop_land_below_sea_level_and_fill_with_water() {
     }
 
     assert!(found_flooded_river, "expected a carved river valley to flood up to sea level");
+}
+
+#[test]
+fn submerged_surface_uses_biome_ocean_floor_block() {
+    let terrain = TerrainConfig {
+        density_3d: Density3DConfig { weight: 0.0, ..Density3DConfig::default() },
+        rivers: RiverConfig { depth: 0.0, ..RiverConfig::default() },
+        detail_amplitude: 0.0,
+        mountain_peak_boost: 0.0,
+        continental_regions: flat_land_regions(-6.0),
+        ..TerrainConfig::default()
+    };
+    let generator = StagedGenerator::new(
+        12345,
+        BlockId(4),
+        terrain,
+        BiomeTable::single_with_ocean_floor(BlockId(1), BlockId(2), BlockId(3), BlockId(8)),
+    );
+    let world_x = 0;
+    let world_z = 0;
+    let top = generator.top_solid_y_at(world_x, world_z);
+    let coord = ChunkCoord::from_world_voxel(IVec3::new(world_x, top, world_z));
+    let mut chunk = Chunk::new();
+
+    generator.generate(coord, &mut chunk);
+
+    let top_local = coord.local_voxel(IVec3::new(world_x, top, world_z));
+    assert_eq!(
+        chunk.get(top_local.x as usize, top_local.y as usize, top_local.z as usize).block_id(),
+        BlockId(8)
+    );
 }
 
 #[test]

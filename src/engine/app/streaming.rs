@@ -54,11 +54,10 @@ impl WorldStreamer {
         let desired_set: AHashSet<_> = desired_coords.iter().copied().collect();
 
         let unloaded_chunk_count = self.prune_unwanted(world, renderer, &desired_set);
-        self.desired_coords = desired_set.clone();
-
         let generated_chunk_count = self.drain_ready_results(world, &desired_set);
         let queued_chunk_count =
             self.enqueue_missing_chunks(world, &desired_coords, generation_budget)?;
+        self.desired_coords = desired_set;
 
         if generated_chunk_count > 0 || unloaded_chunk_count > 0 || queued_chunk_count > 0 {
             crate::log_debug!(
@@ -88,7 +87,6 @@ impl WorldStreamer {
         let desired_set: AHashSet<_> = desired_coords.iter().copied().collect();
 
         self.prune_unwanted(world, None, &desired_set);
-        self.desired_coords = desired_set.clone();
         self.drain_ready_results(world, &desired_set);
         self.enqueue_missing_chunks(world, &desired_coords, generation_budget)?;
 
@@ -97,6 +95,8 @@ impl WorldStreamer {
             let _ = self.insert_generated_chunk(world, &desired_set, result);
             self.enqueue_missing_chunks(world, &desired_coords, generation_budget)?;
         }
+
+        self.desired_coords = desired_set;
 
         Ok(())
     }
@@ -194,7 +194,9 @@ fn chunk_coords_in_render_radius(
     render_radius_xz: i32,
     render_radius_y: i32,
 ) -> Vec<ChunkCoord> {
-    let mut coords = Vec::new();
+    let xz_diameter = (render_radius_xz * 2 + 1).max(0) as usize;
+    let y_diameter = (render_radius_y * 2 + 1).max(0) as usize;
+    let mut coords = Vec::with_capacity(xz_diameter * xz_diameter * y_diameter);
 
     for chunk_z in -render_radius_xz..=render_radius_xz {
         for chunk_y in -render_radius_y..=render_radius_y {

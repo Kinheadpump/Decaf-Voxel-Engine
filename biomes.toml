@@ -1,150 +1,585 @@
 fallback_biome = "temperate_plains"
 
+# ------------------------------------------------------------
+# CORE TEMPERATE / SAFE BIOMES
+# ------------------------------------------------------------
+
 [[biomes]]
 name = "temperate_plains"
 priority = 0
-temperature_min = 0.0
-temperature_max = 1.0
-humidity_min = 0.0
-humidity_max = 1.0
-height_offset = 0.0
-roughness_multiplier = 1.0
-surface_block = "grass"
-soil_block = "dirt"
-soil_depth = 2
-deep_block = "stone"
-liquid_block = "water"
-ocean_floor_block = "dirt"
-grass_color = [111, 169, 68]
-foliage_color = [92, 148, 61]
-features = [
-{ type = "tree", variant = "oak", chance = 0.35 }
-]
-
-[[biomes]]
-name = "humid_lowlands"
-priority = 10
 temperature_min = 0.35
-temperature_max = 0.95
-humidity_min = 0.70
-humidity_max = 1.0
-altitude_min = -32.0
-altitude_max = 56.0
-continentalness_min = 0.22
-continentalness_max = 0.60
-height_offset = -4.0
-roughness_multiplier = 0.72
-surface_block = "grass"
-soil_block = "dirt"
-soil_depth = 4
-deep_block = "stone"
-liquid_block = "water"
-ocean_floor_block = "clay"
-grass_color = [92, 173, 84]
-foliage_color = [61, 135, 58]
-features = [
-{ type = "lake", fluid = "water", chance = 0.05, max_elevation = 20 },
-{ type = "tree", variant = "oak", chance = 0.8 }
-]
-
-[[biomes]]
-name = "dry_plains"
-priority = 10
-temperature_min = 0.60
-temperature_max = 1.0
-humidity_min = 0.0
-humidity_max = 0.32
+temperature_max = 0.72
+humidity_min = 0.30
+humidity_max = 0.68
 altitude_min = -8.0
-altitude_max = 76.0
-continentalness_min = 0.38
-continentalness_max = 0.78
-height_offset = -1.5
-roughness_multiplier = 0.8
-surface_block = "dirt"
-soil_block = "dirt"
-soil_depth = 2
-deep_block = "stone"
-liquid_block = "water"
-ocean_floor_block = "dirt"
-grass_color = [177, 186, 98]
-foliage_color = [147, 154, 78]
-features = [
-{ type = "boulder", block = "stone", chance = 0.15, min_radius = 1, max_radius = 3 }
-]
-
-[[biomes]]
-name = "cool_steppe"
-priority = 10
-temperature_min = 0.0
-temperature_max = 0.35
-humidity_min = 0.2
-humidity_max = 0.75
-altitude_min = 8.0
-altitude_max = 112.0
-continentalness_min = 0.44
-continentalness_max = 0.86
-height_offset = 1.5
-roughness_multiplier = 1.05
+altitude_max = 72.0
+continentalness_min = 0.36
+continentalness_max = 0.72
+height_offset = 0.0
+roughness_multiplier = 0.88
 surface_block = "grass"
 soil_block = "dirt"
 soil_depth = 3
 deep_block = "stone"
 liquid_block = "water"
 ocean_floor_block = "dirt"
-grass_color = [116, 163, 109]
-foliage_color = [88, 126, 86]
+grass_color = [118, 176, 82]
+foliage_color = [92, 150, 68]
 features = [
-{ type = "tree", variant = "oak", chance = 0.2 }
+  { type = "tree", variant = "oak", chance = 0.22 }
+]
+
+[[biomes]]
+name = "meadow"
+priority = 12
+temperature_min = 0.28
+temperature_max = 0.66
+humidity_min = 0.42
+humidity_max = 0.82
+altitude_min = 6.0
+altitude_max = 84.0
+continentalness_min = 0.38
+continentalness_max = 0.72
+height_offset = 1.0
+roughness_multiplier = 0.80
+surface_block = "grass"
+soil_block = "dirt"
+soil_depth = 3
+deep_block = "stone"
+liquid_block = "water"
+ocean_floor_block = "dirt"
+grass_color = [126, 184, 96]
+foliage_color = [104, 158, 80]
+features = [
+  { type = "tree", variant = "oak", chance = 0.12 },
+  { type = "lake", fluid = "water", chance = 0.025, max_elevation = 28 }
+]
+
+[[biomes]]
+name = "deciduous_forest"
+priority = 18
+temperature_min = 0.40
+temperature_max = 0.75
+humidity_min = 0.55
+humidity_max = 1.0
+altitude_min = -4.0
+altitude_max = 88.0
+continentalness_min = 0.34
+continentalness_max = 0.74
+height_offset = 1.5
+roughness_multiplier = 0.92
+surface_block = "grass"
+soil_block = "dirt"
+soil_depth = 4
+deep_block = "stone"
+liquid_block = "water"
+ocean_floor_block = "dirt"
+grass_color = [96, 168, 76]
+foliage_color = [66, 132, 54]
+features = [
+  { type = "tree", variant = "oak", chance = 0.82 }
+]
+
+[[biomes]]
+name = "mixed_forest"
+priority = 20
+temperature_min = 0.22
+temperature_max = 0.55
+humidity_min = 0.45
+humidity_max = 0.92
+altitude_min = 10.0
+altitude_max = 104.0
+continentalness_min = 0.42
+continentalness_max = 0.82
+height_offset = 2.0
+roughness_multiplier = 1.00
+surface_block = "grass"
+soil_block = "dirt"
+soil_depth = 4
+deep_block = "stone"
+liquid_block = "water"
+ocean_floor_block = "dirt"
+grass_color = [102, 160, 90]
+foliage_color = [74, 124, 72]
+features = [
+  { type = "tree", variant = "oak", chance = 0.62 }
+]
+
+# ------------------------------------------------------------
+# WETLANDS / HUMID LOWLANDS
+# ------------------------------------------------------------
+
+[[biomes]]
+name = "humid_lowlands"
+priority = 22
+temperature_min = 0.42
+temperature_max = 0.95
+humidity_min = 0.72
+humidity_max = 1.0
+altitude_min = -24.0
+altitude_max = 42.0
+continentalness_min = 0.22
+continentalness_max = 0.60
+height_offset = -5.0
+roughness_multiplier = 0.64
+surface_block = "grass"
+soil_block = "dirt"
+soil_depth = 4
+deep_block = "stone"
+liquid_block = "water"
+ocean_floor_block = "dirt"
+grass_color = [88, 170, 82]
+foliage_color = [58, 128, 54]
+features = [
+  { type = "lake", fluid = "water", chance = 0.06, max_elevation = 18 },
+  { type = "tree", variant = "oak", chance = 0.68 }
+]
+
+[[biomes]]
+name = "marsh"
+priority = 30
+temperature_min = 0.45
+temperature_max = 0.90
+humidity_min = 0.82
+humidity_max = 1.0
+altitude_min = -20.0
+altitude_max = 18.0
+continentalness_min = 0.20
+continentalness_max = 0.52
+height_offset = -7.0
+roughness_multiplier = 0.40
+surface_block = "grass"
+soil_block = "dirt"
+soil_depth = 5
+deep_block = "stone"
+liquid_block = "water"
+ocean_floor_block = "dirt"
+grass_color = [78, 148, 74]
+foliage_color = [52, 110, 48]
+features = [
+  { type = "lake", fluid = "water", chance = 0.10, max_elevation = 10 },
+  { type = "tree", variant = "oak", chance = 0.38 }
+]
+
+[[biomes]]
+name = "river_floodplain"
+priority = 28
+temperature_min = 0.30
+temperature_max = 0.85
+humidity_min = 0.65
+humidity_max = 1.0
+altitude_min = -18.0
+altitude_max = 30.0
+continentalness_min = 0.26
+continentalness_max = 0.68
+height_offset = -3.5
+roughness_multiplier = 0.55
+surface_block = "grass"
+soil_block = "dirt"
+soil_depth = 5
+deep_block = "stone"
+liquid_block = "water"
+ocean_floor_block = "dirt"
+grass_color = [98, 174, 88]
+foliage_color = [70, 136, 60]
+features = [
+  { type = "tree", variant = "oak", chance = 0.44 },
+  { type = "lake", fluid = "water", chance = 0.035, max_elevation = 16 }
+]
+
+# ------------------------------------------------------------
+# DRY / WARM BIOMES
+# ------------------------------------------------------------
+
+[[biomes]]
+name = "dry_plains"
+priority = 14
+temperature_min = 0.58
+temperature_max = 0.92
+humidity_min = 0.18
+humidity_max = 0.40
+altitude_min = -4.0
+altitude_max = 80.0
+continentalness_min = 0.36
+continentalness_max = 0.78
+height_offset = -1.0
+roughness_multiplier = 0.78
+surface_block = "dirt"
+soil_block = "dirt"
+soil_depth = 3
+deep_block = "stone"
+liquid_block = "water"
+ocean_floor_block = "dirt"
+grass_color = [176, 184, 96]
+foliage_color = [144, 150, 76]
+features = [
+  { type = "boulder", block = "stone", chance = 0.10, min_radius = 1, max_radius = 3 }
+]
+
+[[biomes]]
+name = "scrubland"
+priority = 18
+temperature_min = 0.64
+temperature_max = 0.96
+humidity_min = 0.10
+humidity_max = 0.30
+altitude_min = 4.0
+altitude_max = 96.0
+continentalness_min = 0.42
+continentalness_max = 0.82
+height_offset = 0.5
+roughness_multiplier = 0.92
+surface_block = "dirt"
+soil_block = "dirt"
+soil_depth = 2
+deep_block = "stone"
+liquid_block = "water"
+ocean_floor_block = "dirt"
+grass_color = [168, 172, 92]
+foliage_color = [134, 136, 68]
+features = [
+  { type = "boulder", block = "stone", chance = 0.16, min_radius = 1, max_radius = 3 },
+  { type = "tree", variant = "oak", chance = 0.05 }
+]
+
+[[biomes]]
+name = "warm_steppe"
+priority = 16
+temperature_min = 0.52
+temperature_max = 0.82
+humidity_min = 0.20
+humidity_max = 0.48
+altitude_min = 16.0
+altitude_max = 112.0
+continentalness_min = 0.44
+continentalness_max = 0.84
+height_offset = 1.5
+roughness_multiplier = 0.96
+surface_block = "grass"
+soil_block = "dirt"
+soil_depth = 2
+deep_block = "stone"
+liquid_block = "water"
+ocean_floor_block = "dirt"
+grass_color = [154, 176, 94]
+foliage_color = [124, 142, 74]
+features = [
+  { type = "tree", variant = "oak", chance = 0.08 },
+  { type = "boulder", block = "stone", chance = 0.08, min_radius = 1, max_radius = 2 }
+]
+
+[[biomes]]
+name = "desert"
+priority = 35
+temperature_min = 0.78
+temperature_max = 1.0
+humidity_min = 0.0
+humidity_max = 0.14
+altitude_min = -10.0
+altitude_max = 96.0
+continentalness_min = 0.34
+continentalness_max = 0.88
+height_offset = -2.0
+roughness_multiplier = 0.68
+surface_block = "sand"
+soil_block = "sand"
+soil_depth = 5
+deep_block = "stone"
+liquid_block = "water"
+ocean_floor_block = "sand"
+grass_color = [210, 198, 120]
+foliage_color = [176, 160, 92]
+features = [
+  { type = "boulder", block = "stone", chance = 0.06, min_radius = 1, max_radius = 3 }
 ]
 
 [[biomes]]
 name = "rocky_drylands"
-priority = 20
-temperature_min = 0.68
+priority = 40
+temperature_min = 0.70
 temperature_max = 1.0
 humidity_min = 0.0
-humidity_max = 0.20
-altitude_min = 28.0
-altitude_max = 176.0
-continentalness_min = 0.64
+humidity_max = 0.22
+altitude_min = 36.0
+altitude_max = 188.0
+continentalness_min = 0.60
 continentalness_max = 1.0
-height_offset = 3.0
-roughness_multiplier = 1.15
+height_offset = 4.0
+roughness_multiplier = 1.18
 surface_block = "stone"
 soil_block = "stone"
 soil_depth = 1
 deep_block = "stone"
 liquid_block = "water"
 ocean_floor_block = "stone"
-grass_color = [156, 160, 86]
-foliage_color = [126, 120, 63]
+grass_color = [160, 158, 88]
+foliage_color = [126, 120, 62]
 features = [
-{ type = "boulder", block = "stone", chance = 0.35, min_radius = 2, max_radius = 4 }
+  { type = "boulder", block = "stone", chance = 0.34, min_radius = 2, max_radius = 4 }
+]
+
+# ------------------------------------------------------------
+# COOL / COLD BIOMES
+# ------------------------------------------------------------
+
+[[biomes]]
+name = "cool_steppe"
+priority = 14
+temperature_min = 0.10
+temperature_max = 0.38
+humidity_min = 0.20
+humidity_max = 0.70
+altitude_min = 8.0
+altitude_max = 118.0
+continentalness_min = 0.42
+continentalness_max = 0.86
+height_offset = 1.5
+roughness_multiplier = 1.00
+surface_block = "grass"
+soil_block = "dirt"
+soil_depth = 3
+deep_block = "stone"
+liquid_block = "water"
+ocean_floor_block = "dirt"
+grass_color = [116, 160, 110]
+foliage_color = [88, 122, 86]
+features = [
+  { type = "tree", variant = "oak", chance = 0.14 }
+]
+
+[[biomes]]
+name = "boreal_forest"
+priority = 24
+temperature_min = 0.0
+temperature_max = 0.28
+humidity_min = 0.38
+humidity_max = 0.90
+altitude_min = 16.0
+altitude_max = 132.0
+continentalness_min = 0.46
+continentalness_max = 0.90
+height_offset = 2.5
+roughness_multiplier = 1.04
+surface_block = "grass"
+soil_block = "dirt"
+soil_depth = 4
+deep_block = "stone"
+liquid_block = "water"
+ocean_floor_block = "dirt"
+grass_color = [98, 142, 104]
+foliage_color = [72, 108, 78]
+features = [
+  { type = "tree", variant = "oak", chance = 0.52 }
+]
+
+[[biomes]]
+name = "cold_meadow"
+priority = 18
+temperature_min = 0.0
+temperature_max = 0.22
+humidity_min = 0.18
+humidity_max = 0.62
+altitude_min = 40.0
+altitude_max = 156.0
+continentalness_min = 0.56
+continentalness_max = 0.96
+height_offset = 3.5
+roughness_multiplier = 1.06
+surface_block = "grass"
+soil_block = "dirt"
+soil_depth = 2
+deep_block = "stone"
+liquid_block = "water"
+ocean_floor_block = "dirt"
+grass_color = [120, 150, 118]
+foliage_color = [94, 116, 94]
+features = [
+  { type = "boulder", block = "stone", chance = 0.10, min_radius = 1, max_radius = 3 }
 ]
 
 [[biomes]]
 name = "cold_rock_fields"
-priority = 20
+priority = 42
 temperature_min = 0.0
-temperature_max = 0.18
+temperature_max = 0.16
 humidity_min = 0.0
-humidity_max = 0.55
-altitude_min = 52.0
-altitude_max = 228.0
-continentalness_min = 0.70
+humidity_max = 0.58
+altitude_min = 68.0
+altitude_max = 240.0
+continentalness_min = 0.68
 continentalness_max = 1.0
-height_offset = 5.0
-roughness_multiplier = 1.2
+height_offset = 6.0
+roughness_multiplier = 1.22
 surface_block = "stone"
 soil_block = "stone"
 soil_depth = 1
 deep_block = "stone"
 liquid_block = "water"
 ocean_floor_block = "stone"
-grass_color = [103, 146, 121]
-foliage_color = [79, 110, 98]
+grass_color = [106, 144, 124]
+foliage_color = [80, 108, 98]
 features = [
-{ type = "boulder", block = "stone", chance = 0.25, min_radius = 2, max_radius = 4 }
+  { type = "boulder", block = "stone", chance = 0.26, min_radius = 2, max_radius = 4 }
+]
+
+# ------------------------------------------------------------
+# COASTAL BIOMES
+# ------------------------------------------------------------
+
+[[biomes]]
+name = "sandy_coast"
+priority = 38
+temperature_min = 0.20
+temperature_max = 1.0
+humidity_min = 0.0
+humidity_max = 0.84
+altitude_min = -12.0
+altitude_max = 14.0
+continentalness_min = 0.30
+continentalness_max = 0.48
+height_offset = -2.5
+roughness_multiplier = 0.34
+surface_block = "sand"
+soil_block = "sand"
+soil_depth = 4
+deep_block = "stone"
+liquid_block = "water"
+ocean_floor_block = "sand"
+grass_color = [198, 192, 120]
+foliage_color = [164, 154, 92]
+features = [
+  { type = "lake", fluid = "water", chance = 0.02, max_elevation = 4 }
+]
+
+[[biomes]]
+name = "rocky_coast"
+priority = 28
+temperature_min = 0.0
+temperature_max = 0.42
+humidity_min = 0.0
+humidity_max = 0.78
+altitude_min = -16.0
+altitude_max = 22.0
+continentalness_min = 0.34
+continentalness_max = 0.48
+height_offset = -1.5
+roughness_multiplier = 0.62
+surface_block = "stone"
+soil_block = "stone"
+soil_depth = 1
+deep_block = "stone"
+liquid_block = "water"
+ocean_floor_block = "stone"
+grass_color = [132, 152, 124]
+foliage_color = [102, 116, 96]
+features = [
+  { type = "boulder", block = "stone", chance = 0.22, min_radius = 1, max_radius = 3 }
+]
+
+[[biomes]]
+name = "salt_marsh"
+priority = 36
+temperature_min = 0.40
+temperature_max = 0.88
+humidity_min = 0.76
+humidity_max = 1.0
+altitude_min = -10.0
+altitude_max = 8.0
+continentalness_min = 0.28
+continentalness_max = 0.42
+height_offset = -4.5
+roughness_multiplier = 0.28
+surface_block = "grass"
+soil_block = "dirt"
+soil_depth = 5
+deep_block = "stone"
+liquid_block = "water"
+ocean_floor_block = "dirt"
+grass_color = [110, 156, 96]
+foliage_color = [82, 120, 74]
+features = [
+  { type = "lake", fluid = "water", chance = 0.08, max_elevation = 4 },
+  { type = "tree", variant = "oak", chance = 0.10 }
+]
+
+# ------------------------------------------------------------
+# HIGHLANDS / MOUNTAIN TRANSITIONS
+# ------------------------------------------------------------
+
+[[biomes]]
+name = "foothills"
+priority = 26
+temperature_min = 0.20
+temperature_max = 0.78
+humidity_min = 0.20
+humidity_max = 0.82
+altitude_min = 56.0
+altitude_max = 148.0
+continentalness_min = 0.58
+continentalness_max = 0.90
+height_offset = 5.0
+roughness_multiplier = 1.16
+surface_block = "grass"
+soil_block = "dirt"
+soil_depth = 2
+deep_block = "stone"
+liquid_block = "water"
+ocean_floor_block = "stone"
+grass_color = [122, 160, 100]
+foliage_color = [92, 126, 80]
+features = [
+  { type = "tree", variant = "oak", chance = 0.16 },
+  { type = "boulder", block = "stone", chance = 0.16, min_radius = 1, max_radius = 3 }
+]
+
+[[biomes]]
+name = "alpine_meadow"
+priority = 44
+temperature_min = 0.0
+temperature_max = 0.24
+humidity_min = 0.24
+humidity_max = 0.78
+altitude_min = 108.0
+altitude_max = 196.0
+continentalness_min = 0.72
+continentalness_max = 1.0
+height_offset = 7.5
+roughness_multiplier = 1.18
+surface_block = "grass"
+soil_block = "dirt"
+soil_depth = 2
+deep_block = "stone"
+liquid_block = "water"
+ocean_floor_block = "stone"
+grass_color = [144, 176, 132]
+foliage_color = [116, 142, 108]
+features = [
+  { type = "boulder", block = "stone", chance = 0.18, min_radius = 1, max_radius = 3 }
+]
+
+[[biomes]]
+name = "windswept_highlands"
+priority = 52
+temperature_min = 0.0
+temperature_max = 0.20
+humidity_min = 0.0
+humidity_max = 0.60
+altitude_min = 132.0
+altitude_max = 260.0
+continentalness_min = 0.78
+continentalness_max = 1.0
+height_offset = 9.0
+roughness_multiplier = 1.30
+surface_block = "stone"
+soil_block = "stone"
+soil_depth = 1
+deep_block = "stone"
+liquid_block = "water"
+ocean_floor_block = "stone"
+grass_color = [156, 172, 164]
+foliage_color = [126, 138, 132]
+features = [
+  { type = "boulder", block = "stone", chance = 0.34, min_radius = 2, max_radius = 5 }
 ]
 
 [[biomes]]
@@ -154,20 +589,20 @@ temperature_min = 0.0
 temperature_max = 1.0
 humidity_min = 0.0
 humidity_max = 1.0
-altitude_min = 112.0
+altitude_min = 168.0
 altitude_max = 512.0
-continentalness_min = 0.78
+continentalness_min = 0.82
 continentalness_max = 1.0
-height_offset = 8.0
-roughness_multiplier = 1.35
+height_offset = 14.0
+roughness_multiplier = 1.42
 surface_block = "stone"
 soil_block = "stone"
 soil_depth = 1
 deep_block = "stone"
 liquid_block = "water"
 ocean_floor_block = "stone"
-grass_color = [214, 224, 228]
-foliage_color = [190, 202, 210]
+grass_color = [220, 228, 232]
+foliage_color = [196, 206, 214]
 features = [
-{ type = "boulder", block = "stone", chance = 0.45, min_radius = 2, max_radius = 5 }
+  { type = "boulder", block = "stone", chance = 0.50, min_radius = 2, max_radius = 5 }
 ]

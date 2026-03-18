@@ -8,6 +8,8 @@ height = 720
 [render]
 render_radius_xz = 12
 render_radius_y = 4
+startup_preload_radius_xz = 1
+startup_preload_radius_y = 1
 stream_generation_budget = 16
 stream_max_inflight_generations = 64
 generation_worker_count = 0
@@ -69,85 +71,84 @@ fly_friction = 10.0
 [world]
 seed = 3141592653589793
 biomes_file = "biomes.toml"
-spawn_search_attempts = 10
 
 [world.terrain]
 sea_level = 0
-dirt_depth = 2
-continentalness_contrast = 1.3
-detail_amplitude = 56.0
-biome_blend = 0.10
-climate_contrast = 1.35
-mountain_start_roughness = 1.25
-mountain_peak_boost = 128.0
-mountain_peak_sharpness = 1.85
+dirt_depth = 3
+continentalness_contrast = 1.22
+detail_amplitude = 48.0
+biome_blend = 0.18
+climate_contrast = 1.22
+mountain_start_roughness = 1.18
+mountain_peak_boost = 152.0
+mountain_peak_sharpness = 1.72
 
 [world.terrain.continentalness]
-scale = 0.0022
-octaves = 2
-persistence = 0.55
-lacunarity = 2.0
-
-[world.terrain.detail]
-scale = 0.0095
-octaves = 5
+scale = 0.00175
+octaves = 3
 persistence = 0.52
 lacunarity = 2.0
 
-[world.terrain.density_3d]
-scale = 0.02
-octaves = 4
-persistence = 0.6
+[world.terrain.detail]
+scale = 0.0072
+octaves = 5
+persistence = 0.50
 lacunarity = 2.0
-weight = 15.0
+
+[world.terrain.density_3d]
+scale = 0.018
+octaves = 4
+persistence = 0.58
+lacunarity = 2.0
+weight = 12.0
 
 [world.terrain.rivers]
-scale = 0.0032
+scale = 0.0026
 octaves = 2
 persistence = 0.5
 lacunarity = 2.0
-valley_width = 0.085
-depth = 24.0
-bank_sharpness = 1.6
+valley_width = 0.110
+depth = 28.0
+bank_sharpness = 1.35
 
 [world.terrain.temperature]
-scale = 0.0048
-octaves = 2
+scale = 0.0034
+octaves = 3
 persistence = 0.5
 lacunarity = 2.0
 
 [world.terrain.humidity]
-scale = 0.0048
-octaves = 2
-persistence = 0.5
+scale = 0.0030
+octaves = 3
+persistence = 0.52
 lacunarity = 2.0
 
 [world.terrain.continental_regions.deep_ocean]
-max_value = 0.16
-base_height = -48.0
-roughness = 0.12
+max_value = 0.14
+base_height = -56.0
+roughness = 0.10
 
 [world.terrain.continental_regions.ocean]
-max_value = 0.30
-base_height = -28.0
-roughness = 0.22
+max_value = 0.28
+base_height = -32.0
+roughness = 0.18
 
 [world.terrain.continental_regions.coast]
-max_value = 0.42
-base_height = -10.0
-roughness = 0.40
+max_value = 0.40
+base_height = -8.0
+roughness = 0.34
 
 [world.terrain.continental_regions.plains]
-max_value = 0.62
-base_height = 14.0
-roughness = 0.85
+max_value = 0.60
+base_height = 16.0
+roughness = 0.78
 
 [world.terrain.continental_regions.highlands]
-max_value = 0.80
-base_height = 42.0
-roughness = 1.95
+max_value = 0.79
+base_height = 46.0
+roughness = 1.70
 
 [world.terrain.continental_regions.mountains]
 max_value = 1.0
-base_height = 124.0
-roughness = 3.60
+base_height = 132.0
+roughness = 3.10

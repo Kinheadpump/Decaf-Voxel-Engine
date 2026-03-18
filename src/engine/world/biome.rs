@@ -36,6 +36,16 @@ impl BiomeTable {
 
     #[cfg(test)]
     pub fn single(surface_block: BlockId, soil_block: BlockId, deep_block: BlockId) -> Self {
+        Self::single_with_ocean_floor(surface_block, soil_block, deep_block, soil_block)
+    }
+
+    #[cfg(test)]
+    pub fn single_with_ocean_floor(
+        surface_block: BlockId,
+        soil_block: BlockId,
+        deep_block: BlockId,
+        ocean_floor_block: BlockId,
+    ) -> Self {
         let biome = ResolvedBiome {
             name: Arc::<str>::from("default"),
             priority: 0,
@@ -48,6 +58,7 @@ impl BiomeTable {
             surface_block,
             soil_block,
             deep_block,
+            ocean_floor_block,
             grass_color: DEFAULT_TINT_COLOR,
             foliage_color: DEFAULT_TINT_COLOR,
             height_offset: 0.0,
@@ -165,6 +176,7 @@ pub struct ResolvedBiome {
     pub surface_block: BlockId,
     pub soil_block: BlockId,
     pub deep_block: BlockId,
+    pub ocean_floor_block: BlockId,
     pub grass_color: [u8; 3],
     pub foliage_color: [u8; 3],
     pub height_offset: f32,
@@ -198,6 +210,12 @@ impl ResolvedBiome {
         let humidity_max = definition.humidity_min.max(definition.humidity_max).clamp(0.0, 1.0);
         let roughness_multiplier = definition.roughness_multiplier.max(0.0);
 
+        let ocean_floor_block_name = if definition.ocean_floor_block.is_empty() {
+            &definition.soil_block
+        } else {
+            &definition.ocean_floor_block
+        };
+
         Ok(Self {
             name: Arc::<str>::from(definition.name),
             priority: definition.priority,
@@ -216,6 +234,7 @@ impl ResolvedBiome {
             surface_block: resolve_block(&definition.surface_block, block_registry)?,
             soil_block: resolve_block(&definition.soil_block, block_registry)?,
             deep_block: resolve_block(&definition.deep_block, block_registry)?,
+            ocean_floor_block: resolve_block(ocean_floor_block_name, block_registry)?,
             grass_color: definition.grass_color,
             foliage_color: definition.foliage_color,
             height_offset: definition.height_offset,
@@ -393,6 +412,8 @@ struct BiomeDefinition {
     surface_block: String,
     soil_block: String,
     deep_block: String,
+    #[serde(default)]
+    ocean_floor_block: String,
     #[serde(default = "default_tint_color")]
     grass_color: [u8; 3],
     #[serde(default = "default_tint_color")]

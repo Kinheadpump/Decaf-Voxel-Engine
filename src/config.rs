@@ -41,6 +41,8 @@ impl Default for WindowConfig {
 pub struct RenderConfig {
     pub render_radius_xz: i32,
     pub render_radius_y: i32,
+    pub startup_preload_radius_xz: i32,
+    pub startup_preload_radius_y: i32,
     pub stream_generation_budget: usize,
     pub stream_max_inflight_generations: usize,
     pub generation_worker_count: usize,
@@ -59,6 +61,8 @@ impl Default for RenderConfig {
         Self {
             render_radius_xz: 4,
             render_radius_y: 1,
+            startup_preload_radius_xz: 1,
+            startup_preload_radius_y: 1,
             stream_generation_budget: 16,
             stream_max_inflight_generations: 64,
             generation_worker_count: 0,

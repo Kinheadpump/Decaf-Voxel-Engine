@@ -56,6 +56,9 @@ pub fn create_default_block_registry() -> BlockRegistry {
             .tint(BlockTint::all(BiomeTint::Foliage)),
     );
 
+    registry
+        .register(BlockBuilder::new("sand").solid().opaque().textures(BlockTextures::all("sand")));
+
     registry.register(
         BlockBuilder::new("water")
             .transparent()
