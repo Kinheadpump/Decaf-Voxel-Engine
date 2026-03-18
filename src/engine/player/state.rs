@@ -79,12 +79,13 @@ impl Player {
 
     #[inline]
     pub fn forward_3d(&self) -> Vec3 {
-        let cp = self.pitch.cos();
-        let sp = self.pitch.sin();
-        let sy = self.yaw.sin();
-        let cy = self.yaw.cos();
+        let cosine_pitch = self.pitch.cos();
+        let sine_pitch = self.pitch.sin();
+        let sine_yaw = self.yaw.sin();
+        let cosine_yaw = self.yaw.cos();
 
-        Vec3::new(sy * cp, sp, -cy * cp).normalize_or_zero()
+        Vec3::new(sine_yaw * cosine_pitch, sine_pitch, -cosine_yaw * cosine_pitch)
+            .normalize_or_zero()
     }
 
     #[inline]

@@ -4,7 +4,7 @@ use ahash::AHashSet;
 
 use crate::engine::{
     core::math::IVec3,
-    player::controller::Player,
+    player::state::Player,
     render::{
         meshing::{MeshingFocus, sort_chunk_coords_by_priority},
         renderer::Renderer,

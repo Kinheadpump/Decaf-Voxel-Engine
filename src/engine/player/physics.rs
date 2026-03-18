@@ -8,7 +8,7 @@ use crate::{
             math::{IVec3, Vec3},
         },
         input::InputState,
-        player::controller::{MovementMode, Player},
+        player::state::{MovementMode, Player},
         world::{accessor::VoxelAccessor, block::resolved::ResolvedBlockRegistry, storage::World},
     },
 };
@@ -321,7 +321,7 @@ mod tests {
     use super::flying_move_direction;
     use crate::{
         config::PlayerConfig,
-        engine::{input::InputState, player::controller::Player},
+        engine::{input::InputState, player::state::Player},
     };
     use winit::keyboard::KeyCode;
 

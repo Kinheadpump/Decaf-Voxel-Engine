@@ -127,7 +127,7 @@ pub struct OverlayConfig {
 impl Default for OverlayConfig {
     fn default() -> Self {
         Self {
-            max_glyphs: 384,
+            max_glyphs: 768,
             glyph_width: 12.0,
             glyph_height: 15.0,
             padding_x: 8.0,
@@ -191,6 +191,8 @@ pub struct TerrainConfig {
     pub continentalness_contrast: f32,
     pub detail: NoiseConfig,
     pub detail_amplitude: f32,
+    pub density_3d: Density3DConfig,
+    pub rivers: RiverConfig,
     pub biome_blend: f32,
     pub climate_contrast: f32,
     pub temperature: NoiseConfig,
@@ -215,6 +217,8 @@ impl Default for TerrainConfig {
             continentalness_contrast: 1.3,
             detail: NoiseConfig { scale: 0.0095, octaves: 5, persistence: 0.52, lacunarity: 2.0 },
             detail_amplitude: 56.0,
+            density_3d: Density3DConfig::default(),
+            rivers: RiverConfig::default(),
             biome_blend: 0.10,
             climate_contrast: 1.35,
             temperature: NoiseConfig {
@@ -228,6 +232,43 @@ impl Default for TerrainConfig {
             mountain_peak_boost: 128.0,
             mountain_peak_sharpness: 1.85,
             continental_regions: ContinentalRegionsConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(default)]
+pub struct Density3DConfig {
+    pub scale: f32,
+    pub octaves: u32,
+    pub persistence: f32,
+    pub lacunarity: f32,
+    pub weight: f32,
+}
+
+impl Default for Density3DConfig {
+    fn default() -> Self {
+        Self { scale: 0.02, octaves: 4, persistence: 0.6, lacunarity: 2.0, weight: 15.0 }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(default)]
+pub struct RiverConfig {
+    #[serde(flatten)]
+    pub noise: NoiseConfig,
+    pub valley_width: f32,
+    pub depth: f32,
+    pub bank_sharpness: f32,
+}
+
+impl Default for RiverConfig {
+    fn default() -> Self {
+        Self {
+            noise: NoiseConfig { scale: 0.0032, octaves: 2, persistence: 0.5, lacunarity: 2.0 },
+            valley_width: 0.085,
+            depth: 24.0,
+            bank_sharpness: 1.6,
         }
     }
 }

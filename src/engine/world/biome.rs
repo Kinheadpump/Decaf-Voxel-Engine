@@ -5,17 +5,24 @@ use serde::Deserialize;
 
 use crate::engine::world::block::{id::BlockId, registry::BlockRegistry};
 
-const BIOME_LUT_AXIS: usize = 64;
-const BIOME_LUT_CELL_COUNT: usize = BIOME_LUT_AXIS * BIOME_LUT_AXIS;
-const MIN_BIOME_AREA: f32 = 0.06;
+const MIN_BIOME_COVERAGE: f32 = 0.06;
 const MAX_SPECIFICITY_BIAS: f32 = 4.0;
 const PRIORITY_BIAS_STEP: f32 = 0.25;
 const DEFAULT_TINT_COLOR: [u8; 3] = [255, 255, 255];
+const DEFAULT_ALTITUDE_SPAN: f32 = 256.0;
 
 #[derive(Debug, Clone)]
 pub struct BiomeTable {
     biomes: Vec<ResolvedBiome>,
-    lookup: Box<[u16; BIOME_LUT_CELL_COUNT]>,
+    fallback_index: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BiomeSamplePoint {
+    pub temperature: f32,
+    pub humidity: f32,
+    pub altitude: f32,
+    pub continentalness: f32,
 }
 
 impl BiomeTable {
@@ -36,6 +43,8 @@ impl BiomeTable {
             temperature_max: 1.0,
             humidity_min: 0.0,
             humidity_max: 1.0,
+            altitude_constraint: RangeConstraint::unbounded(),
+            continentalness_constraint: RangeConstraint::bounded(0.0, 1.0),
             surface_block,
             soil_block,
             deep_block,
@@ -45,47 +54,34 @@ impl BiomeTable {
             roughness_multiplier: 1.0,
         };
 
-        Self { biomes: vec![biome], lookup: Box::new([0u16; BIOME_LUT_CELL_COUNT]) }
+        Self { biomes: vec![biome], fallback_index: 0 }
     }
 
-    pub fn sample(&self, temperature: f32, humidity: f32) -> &ResolvedBiome {
-        let temperature_index = quantize_unit(temperature);
-        let humidity_index = quantize_unit(humidity);
-        let biome_index = self.lookup[lut_index(temperature_index, humidity_index)] as usize;
-        &self.biomes[biome_index]
+    pub fn sample(&self, point: BiomeSamplePoint) -> &ResolvedBiome {
+        &self.biomes[self.select_biome_index(point)]
     }
 
     pub fn sample_blended(
         &self,
-        temperature: f32,
-        humidity: f32,
+        point: BiomeSamplePoint,
         blend_radius: f32,
     ) -> BiomeBlendSample<'_> {
-        let dominant = self.sample(temperature, humidity);
+        let dominant = self.sample(point);
         let blend_radius = blend_radius.clamp(0.0, 0.5);
         let mut total_weight = 0.0;
         let mut height_offset = 0.0;
         let mut roughness_multiplier = 0.0;
 
         for biome in &self.biomes {
-            let temperature_weight = smooth_range_weight(
-                temperature,
-                biome.temperature_min,
-                biome.temperature_max,
-                blend_radius,
-            );
-            let humidity_weight =
-                smooth_range_weight(humidity, biome.humidity_min, biome.humidity_max, blend_radius);
-            let range_weight = temperature_weight * humidity_weight;
-
+            let range_weight = biome.blend_weight(point, blend_radius);
             if range_weight <= f32::EPSILON {
                 continue;
             }
 
-            // Narrower and higher-priority biomes should influence the blend more strongly than
-            // the all-covering fallback biome, otherwise border areas still "snap" toward fallback.
+            // Narrow, high-priority biomes should influence boundary blends more than the
+            // all-covering fallback biome.
             let specificity_bias =
-                (1.0 / biome.coverage_area().max(MIN_BIOME_AREA)).min(MAX_SPECIFICITY_BIAS);
+                (1.0 / biome.coverage_score().max(MIN_BIOME_COVERAGE)).min(MAX_SPECIFICITY_BIAS);
             let priority_bias = 1.0 + biome.priority.max(0) as f32 * PRIORITY_BIAS_STEP;
             let weight = range_weight * specificity_bias * priority_bias;
 
@@ -122,10 +118,6 @@ impl BiomeTable {
             bail!("biome file must define at least one biome");
         }
 
-        if definition.biomes.len() > u16::MAX as usize {
-            bail!("biome file defines too many biomes");
-        }
-
         let mut biomes = Vec::with_capacity(definition.biomes.len());
         for biome in definition.biomes {
             biomes.push(ResolvedBiome::resolve(biome, block_registry)?);
@@ -140,8 +132,30 @@ impl BiomeTable {
             0
         };
 
-        let lookup = compile_lookup(&biomes, fallback_index);
-        Ok(Self { biomes, lookup })
+        Ok(Self { biomes, fallback_index })
+    }
+
+    fn select_biome_index(&self, point: BiomeSamplePoint) -> usize {
+        let mut best_index = self.fallback_index;
+        let mut best_priority = i32::MIN;
+        let mut best_coverage = f32::INFINITY;
+
+        for (index, biome) in self.biomes.iter().enumerate() {
+            if !biome.matches(point) {
+                continue;
+            }
+
+            let coverage = biome.coverage_score();
+            if biome.priority > best_priority
+                || (biome.priority == best_priority && coverage < best_coverage)
+            {
+                best_index = index;
+                best_priority = biome.priority;
+                best_coverage = coverage;
+            }
+        }
+
+        best_index
     }
 }
 
@@ -160,6 +174,8 @@ pub struct ResolvedBiome {
     temperature_max: f32,
     humidity_min: f32,
     humidity_max: f32,
+    altitude_constraint: RangeConstraint,
+    continentalness_constraint: RangeConstraint,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -189,6 +205,14 @@ impl ResolvedBiome {
             temperature_max,
             humidity_min,
             humidity_max,
+            altitude_constraint: RangeConstraint::from_altitude_bounds(
+                definition.altitude_min,
+                definition.altitude_max,
+            ),
+            continentalness_constraint: RangeConstraint::from_unit_bounds(
+                definition.continentalness_min,
+                definition.continentalness_max,
+            ),
             surface_block: resolve_block(&definition.surface_block, block_registry)?,
             soil_block: resolve_block(&definition.soil_block, block_registry)?,
             deep_block: resolve_block(&definition.deep_block, block_registry)?,
@@ -199,15 +223,146 @@ impl ResolvedBiome {
         })
     }
 
-    fn matches(&self, temperature: f32, humidity: f32) -> bool {
-        self.temperature_min <= temperature
-            && temperature <= self.temperature_max
-            && self.humidity_min <= humidity
-            && humidity <= self.humidity_max
+    #[inline]
+    fn matches(&self, point: BiomeSamplePoint) -> bool {
+        self.temperature_min <= point.temperature
+            && point.temperature <= self.temperature_max
+            && self.humidity_min <= point.humidity
+            && point.humidity <= self.humidity_max
+            && self.altitude_constraint.matches(point.altitude)
+            && self.continentalness_constraint.matches(point.continentalness)
     }
 
-    fn coverage_area(&self) -> f32 {
-        (self.temperature_max - self.temperature_min) * (self.humidity_max - self.humidity_min)
+    fn blend_weight(&self, point: BiomeSamplePoint, blend_radius: f32) -> f32 {
+        let temperature_weight = smooth_range_weight(
+            point.temperature,
+            self.temperature_min,
+            self.temperature_max,
+            blend_radius,
+        );
+        let humidity_weight =
+            smooth_range_weight(point.humidity, self.humidity_min, self.humidity_max, blend_radius);
+        let altitude_weight =
+            self.altitude_constraint.altitude_blend_weight(point.altitude, blend_radius);
+        let continentalness_weight =
+            self.continentalness_constraint.blend_weight(point.continentalness, blend_radius);
+
+        temperature_weight * humidity_weight * altitude_weight * continentalness_weight
+    }
+
+    fn coverage_score(&self) -> f32 {
+        let temperature_span = (self.temperature_max - self.temperature_min).max(f32::EPSILON);
+        let humidity_span = (self.humidity_max - self.humidity_min).max(f32::EPSILON);
+        let altitude_span = self.altitude_constraint.altitude_specificity_span();
+        let continentalness_span = self.continentalness_constraint.unit_specificity_span();
+
+        temperature_span * humidity_span * altitude_span * continentalness_span
+    }
+
+    pub fn priority(&self) -> i32 {
+        self.priority
+    }
+
+    pub fn temperature_range(&self) -> (f32, f32) {
+        (self.temperature_min, self.temperature_max)
+    }
+
+    pub fn humidity_range(&self) -> (f32, f32) {
+        (self.humidity_min, self.humidity_max)
+    }
+
+    pub fn altitude_range(&self) -> (Option<f32>, Option<f32>) {
+        self.altitude_constraint.bounds()
+    }
+
+    pub fn continentalness_range(&self) -> (Option<f32>, Option<f32>) {
+        self.continentalness_constraint.bounds()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct RangeConstraint {
+    min: Option<f32>,
+    max: Option<f32>,
+}
+
+impl RangeConstraint {
+    const fn unbounded() -> Self {
+        Self { min: None, max: None }
+    }
+
+    fn bounded(min: f32, max: f32) -> Self {
+        Self { min: Some(min.min(max)), max: Some(min.max(max)) }
+    }
+
+    fn from_unit_bounds(min: Option<f32>, max: Option<f32>) -> Self {
+        if min.is_none() && max.is_none() {
+            return Self::bounded(0.0, 1.0);
+        }
+
+        let resolved_min = min.unwrap_or(0.0).clamp(0.0, 1.0);
+        let resolved_max = max.unwrap_or(1.0).clamp(0.0, 1.0);
+        Self::bounded(resolved_min, resolved_max)
+    }
+
+    fn from_altitude_bounds(min: Option<f32>, max: Option<f32>) -> Self {
+        match (min, max) {
+            (None, None) => Self::unbounded(),
+            (Some(min), Some(max)) => Self::bounded(min, max),
+            (Some(min), None) => Self { min: Some(min), max: None },
+            (None, Some(max)) => Self { min: None, max: Some(max) },
+        }
+    }
+
+    #[inline]
+    fn matches(&self, value: f32) -> bool {
+        self.min.is_none_or(|min| min <= value) && self.max.is_none_or(|max| value <= max)
+    }
+
+    fn blend_weight(&self, value: f32, blend_radius: f32) -> f32 {
+        match (self.min, self.max) {
+            (None, None) => 1.0,
+            (Some(min), Some(max)) => smooth_range_weight(value, min, max, blend_radius),
+            (Some(min), None) => smooth_lower_bound_weight(value, min, blend_radius),
+            (None, Some(max)) => smooth_upper_bound_weight(value, max, blend_radius),
+        }
+    }
+
+    fn altitude_blend_weight(&self, value: f32, blend_radius: f32) -> f32 {
+        if blend_radius <= f32::EPSILON {
+            return self.matches(value) as u8 as f32;
+        }
+
+        let altitude_edge = (DEFAULT_ALTITUDE_SPAN * blend_radius * 0.5).max(1.0);
+
+        match (self.min, self.max) {
+            (None, None) => 1.0,
+            (Some(min), Some(max)) => {
+                let scaled_edge = ((max - min).abs() * blend_radius).max(1.0);
+                smooth_range_weight(value, min, max, scaled_edge)
+            }
+            (Some(min), None) => smooth_lower_bound_weight(value, min, altitude_edge),
+            (None, Some(max)) => smooth_upper_bound_weight(value, max, altitude_edge),
+        }
+    }
+
+    fn unit_specificity_span(&self) -> f32 {
+        match (self.min, self.max) {
+            (Some(min), Some(max)) => (max - min).max(f32::EPSILON),
+            _ => 1.0,
+        }
+    }
+
+    fn altitude_specificity_span(&self) -> f32 {
+        match (self.min, self.max) {
+            (Some(min), Some(max)) => ((max - min).max(1.0) / DEFAULT_ALTITUDE_SPAN).min(1.0),
+            (Some(_), None) | (None, Some(_)) => 0.5,
+            (None, None) => 1.0,
+        }
+    }
+
+    fn bounds(&self) -> (Option<f32>, Option<f32>) {
+        (self.min, self.max)
     }
 }
 
@@ -227,6 +382,14 @@ struct BiomeDefinition {
     temperature_max: f32,
     humidity_min: f32,
     humidity_max: f32,
+    #[serde(default)]
+    altitude_min: Option<f32>,
+    #[serde(default)]
+    altitude_max: Option<f32>,
+    #[serde(default)]
+    continentalness_min: Option<f32>,
+    #[serde(default)]
+    continentalness_max: Option<f32>,
     surface_block: String,
     soil_block: String,
     deep_block: String,
@@ -248,43 +411,6 @@ fn default_tint_color() -> [u8; 3] {
     DEFAULT_TINT_COLOR
 }
 
-fn compile_lookup(
-    biomes: &[ResolvedBiome],
-    fallback_index: usize,
-) -> Box<[u16; BIOME_LUT_CELL_COUNT]> {
-    let mut lookup = Box::new([0u16; BIOME_LUT_CELL_COUNT]);
-
-    for humidity_index in 0..BIOME_LUT_AXIS {
-        let humidity = sample_point(humidity_index);
-
-        for temperature_index in 0..BIOME_LUT_AXIS {
-            let temperature = sample_point(temperature_index);
-            let mut best_index = fallback_index;
-            let mut best_priority = i32::MIN;
-            let mut best_area = f32::INFINITY;
-
-            for (index, biome) in biomes.iter().enumerate() {
-                if !biome.matches(temperature, humidity) {
-                    continue;
-                }
-
-                let area = biome.coverage_area();
-                if biome.priority > best_priority
-                    || (biome.priority == best_priority && area < best_area)
-                {
-                    best_index = index;
-                    best_priority = biome.priority;
-                    best_area = area;
-                }
-            }
-
-            lookup[lut_index(temperature_index, humidity_index)] = best_index as u16;
-        }
-    }
-
-    lookup
-}
-
 fn resolve_block(name: &str, block_registry: &BlockRegistry) -> anyhow::Result<BlockId> {
     block_registry.get_id(name).with_context(|| format!("biome referenced unknown block '{name}'"))
 }
@@ -304,6 +430,22 @@ fn smooth_range_weight(value: f32, min: f32, max: f32, blend_radius: f32) -> f32
     rise.min(fall).clamp(0.0, 1.0)
 }
 
+fn smooth_lower_bound_weight(value: f32, min: f32, blend_radius: f32) -> f32 {
+    if blend_radius <= f32::EPSILON {
+        return (value >= min) as u8 as f32;
+    }
+
+    smoothstep_range(min - blend_radius.max(0.001), min + blend_radius.max(0.001), value)
+}
+
+fn smooth_upper_bound_weight(value: f32, max: f32, blend_radius: f32) -> f32 {
+    if blend_radius <= f32::EPSILON {
+        return (value <= max) as u8 as f32;
+    }
+
+    1.0 - smoothstep_range(max - blend_radius.max(0.001), max + blend_radius.max(0.001), value)
+}
+
 #[inline]
 fn smoothstep_range(edge0: f32, edge1: f32, value: f32) -> f32 {
     if (edge1 - edge0).abs() <= f32::EPSILON {
@@ -312,22 +454,6 @@ fn smoothstep_range(edge0: f32, edge1: f32, value: f32) -> f32 {
 
     let t = ((value - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
-}
-
-#[inline]
-fn quantize_unit(value: f32) -> usize {
-    let scaled = value.clamp(0.0, 1.0) * (BIOME_LUT_AXIS - 1) as f32;
-    scaled.round() as usize
-}
-
-#[inline]
-fn sample_point(index: usize) -> f32 {
-    (index as f32 + 0.5) / BIOME_LUT_AXIS as f32
-}
-
-#[inline]
-fn lut_index(temperature_index: usize, humidity_index: usize) -> usize {
-    temperature_index + humidity_index * BIOME_LUT_AXIS
 }
 
 #[cfg(test)]
@@ -339,6 +465,10 @@ mod tests {
         let registry = create_default_block_registry();
         let definition: BiomeFile = toml::from_str(source).expect("biome definition should parse");
         BiomeTable::from_definition(definition, &registry).expect("biome definition should load")
+    }
+
+    fn point(temperature: f32, humidity: f32) -> BiomeSamplePoint {
+        BiomeSamplePoint { temperature, humidity, altitude: 48.0, continentalness: 0.5 }
     }
 
     #[test]
@@ -372,8 +502,8 @@ deep_block = "stone"
         );
 
         assert_eq!(table.len(), 2);
-        assert_eq!(table.sample(0.9, 0.1).name.as_ref(), "desert");
-        assert_eq!(table.sample(0.5, 0.5).name.as_ref(), "temperate");
+        assert_eq!(table.sample(point(0.9, 0.1)).name.as_ref(), "desert");
+        assert_eq!(table.sample(point(0.5, 0.5)).name.as_ref(), "temperate");
     }
 
     #[test]
@@ -406,8 +536,66 @@ deep_block = "stone"
 "#,
         );
 
-        assert_eq!(table.sample(0.95, 0.95).name.as_ref(), "fallback");
-        assert_eq!(table.sample(0.1, 0.1).name.as_ref(), "cold_dry");
+        assert_eq!(table.sample(point(0.95, 0.95)).name.as_ref(), "fallback");
+        assert_eq!(table.sample(point(0.1, 0.1)).name.as_ref(), "cold_dry");
+    }
+
+    #[test]
+    fn biome_table_uses_altitude_and_continentalness_constraints() {
+        let table = biome_table_from_toml(
+            r#"
+fallback_biome = "plains"
+
+[[biomes]]
+name = "plains"
+priority = 0
+temperature_min = 0.0
+temperature_max = 1.0
+humidity_min = 0.0
+humidity_max = 1.0
+surface_block = "grass"
+soil_block = "dirt"
+deep_block = "stone"
+
+[[biomes]]
+name = "snowy_peaks"
+priority = 100
+temperature_min = 0.0
+temperature_max = 1.0
+humidity_min = 0.0
+humidity_max = 1.0
+altitude_min = 90.0
+altitude_max = 256.0
+continentalness_min = 0.75
+continentalness_max = 1.0
+surface_block = "stone"
+soil_block = "stone"
+deep_block = "stone"
+"#,
+        );
+
+        let lowland_point = BiomeSamplePoint {
+            temperature: 0.6,
+            humidity: 0.6,
+            altitude: 64.0,
+            continentalness: 0.8,
+        };
+        let peak_point = BiomeSamplePoint {
+            temperature: 0.8,
+            humidity: 0.5,
+            altitude: 128.0,
+            continentalness: 0.92,
+        };
+        let coastal_point = BiomeSamplePoint {
+            temperature: 0.8,
+            humidity: 0.5,
+            altitude: 128.0,
+            continentalness: 0.45,
+        };
+
+        assert_eq!(table.sample(lowland_point).name.as_ref(), "plains");
+        assert_eq!(table.sample(peak_point).name.as_ref(), "snowy_peaks");
+        assert_eq!(table.sample(coastal_point).name.as_ref(), "plains");
     }
 
     #[test]
@@ -430,12 +618,16 @@ height_offset = 0.0
 roughness_multiplier = 1.0
 
 [[biomes]]
-name = "dry"
+name = "dry_highlands"
 priority = 10
 temperature_min = 0.5
 temperature_max = 1.0
 humidity_min = 0.0
 humidity_max = 0.3
+altitude_min = 60.0
+altitude_max = 120.0
+continentalness_min = 0.55
+continentalness_max = 1.0
 surface_block = "dirt"
 soil_block = "dirt"
 deep_block = "stone"
@@ -444,8 +636,16 @@ roughness_multiplier = 2.0
 "#,
         );
 
-        let blend = table.sample_blended(0.6, 0.28, 0.10);
-        assert_eq!(blend.dominant.name.as_ref(), "dry");
+        let blend = table.sample_blended(
+            BiomeSamplePoint {
+                temperature: 0.6,
+                humidity: 0.28,
+                altitude: 62.0,
+                continentalness: 0.58,
+            },
+            0.10,
+        );
+        assert_eq!(blend.dominant.name.as_ref(), "dry_highlands");
         assert!(blend.height_offset > 0.0 && blend.height_offset < 12.0);
         assert!(blend.roughness_multiplier > 1.0 && blend.roughness_multiplier < 2.0);
     }
@@ -471,7 +671,7 @@ foliage_color = [90, 140, 60]
 "#,
         );
 
-        let biome = table.sample(0.5, 0.5);
+        let biome = table.sample(point(0.5, 0.5));
         assert_eq!(biome.grass_color, [120, 180, 80]);
         assert_eq!(biome.foliage_color, [90, 140, 60]);
     }

@@ -3,7 +3,7 @@ use crate::engine::{
         collision::aabb_intersects,
         math::{IVec3, Vec3},
     },
-    player::controller::Player,
+    player::state::Player,
     world::{
         accessor::{VoxelAccessor, WorldVoxelReader},
         block::{id::BlockId, resolved::ResolvedBlockRegistry},
@@ -226,7 +226,7 @@ mod tests {
     use crate::{
         config::PlayerConfig,
         engine::{
-            player::controller::Player,
+            player::state::Player,
             render::materials::create_texture_registry,
             world::{
                 block::{create_default_block_registry, resolved::ResolvedBlockRegistry},

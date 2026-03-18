@@ -1,3 +1,5 @@
+fallback_biome = "temperate_plains"
+
 [[biomes]]
 name = "temperate_plains"
 priority = 0
@@ -26,6 +28,10 @@ temperature_min = 0.35
 temperature_max = 0.95
 humidity_min = 0.70
 humidity_max = 1.0
+altitude_min = -32.0
+altitude_max = 56.0
+continentalness_min = 0.22
+continentalness_max = 0.60
 height_offset = -4.0
 roughness_multiplier = 0.72
 surface_block = "grass"
@@ -48,6 +54,10 @@ temperature_min = 0.60
 temperature_max = 1.0
 humidity_min = 0.0
 humidity_max = 0.32
+altitude_min = -8.0
+altitude_max = 76.0
+continentalness_min = 0.38
+continentalness_max = 0.78
 height_offset = -1.5
 roughness_multiplier = 0.8
 surface_block = "dirt"
@@ -69,6 +79,10 @@ temperature_min = 0.0
 temperature_max = 0.35
 humidity_min = 0.2
 humidity_max = 0.75
+altitude_min = 8.0
+altitude_max = 112.0
+continentalness_min = 0.44
+continentalness_max = 0.86
 height_offset = 1.5
 roughness_multiplier = 1.05
 surface_block = "grass"
@@ -90,6 +104,10 @@ temperature_min = 0.68
 temperature_max = 1.0
 humidity_min = 0.0
 humidity_max = 0.20
+altitude_min = 28.0
+altitude_max = 176.0
+continentalness_min = 0.64
+continentalness_max = 1.0
 height_offset = 3.0
 roughness_multiplier = 1.15
 surface_block = "stone"
@@ -111,6 +129,10 @@ temperature_min = 0.0
 temperature_max = 0.18
 humidity_min = 0.0
 humidity_max = 0.55
+altitude_min = 52.0
+altitude_max = 228.0
+continentalness_min = 0.70
+continentalness_max = 1.0
 height_offset = 5.0
 roughness_multiplier = 1.2
 surface_block = "stone"
@@ -123,4 +145,29 @@ grass_color = [103, 146, 121]
 foliage_color = [79, 110, 98]
 features = [
 { type = "boulder", block = "stone", chance = 0.25, min_radius = 2, max_radius = 4 }
+]
+
+[[biomes]]
+name = "snowy_peaks"
+priority = 100
+temperature_min = 0.0
+temperature_max = 1.0
+humidity_min = 0.0
+humidity_max = 1.0
+altitude_min = 112.0
+altitude_max = 512.0
+continentalness_min = 0.78
+continentalness_max = 1.0
+height_offset = 8.0
+roughness_multiplier = 1.35
+surface_block = "stone"
+soil_block = "stone"
+soil_depth = 1
+deep_block = "stone"
+liquid_block = "water"
+ocean_floor_block = "stone"
+grass_color = [214, 224, 228]
+foliage_color = [190, 202, 210]
+features = [
+{ type = "boulder", block = "stone", chance = 0.45, min_radius = 2, max_radius = 5 }
 ]

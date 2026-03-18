@@ -2,7 +2,7 @@ use crate::engine::render::gpu_types::{DebugViewMode, RenderStats, TextGlyphInst
 
 use super::Renderer;
 
-const RIGHT_COLUMN_OFFSET_CHARS: f32 = 25.0;
+const RIGHT_COLUMN_OFFSET_CHARS: f32 = 32.0;
 
 impl Renderer {
     pub(super) fn build_overlay_instances(&self, stats: RenderStats) -> Vec<TextGlyphInstance> {
@@ -10,45 +10,80 @@ impl Renderer {
             return Vec::new();
         };
 
-        let left_lines = [
+        let left_lines = vec![
             "F3 DEBUG".to_string(),
             String::new(),
             "PLAYER".to_string(),
-            format!("FPS      {}", debug_overlay.fps),
+            format!("FPS        {}", debug_overlay.fps),
             format!(
-                "POS      {} {} {}",
+                "POS        {} {} {}",
                 debug_overlay.player_voxel[0],
                 debug_overlay.player_voxel[1],
                 debug_overlay.player_voxel[2]
             ),
             format!(
-                "CHUNK    {} {} {}",
+                "CHUNK      {} {} {}",
                 debug_overlay.player_chunk[0],
                 debug_overlay.player_chunk[1],
                 debug_overlay.player_chunk[2]
             ),
-            format!("FACING   {}", debug_overlay.player_facing),
-            format!("BIOME    {}", debug_overlay.biome_name),
-            format!("REGION   {}", debug_overlay.region_name),
-            format!("GROUND   {}", debug_overlay.surface_y),
-            format!("TEMP     {}", debug_overlay.temperature_percent),
-            format!("HUMID    {}", debug_overlay.humidity_percent),
+            format!("FACING     {}", debug_overlay.player_facing),
+            String::new(),
+            "TERRAIN".to_string(),
+            format!("BIOME      {}", debug_overlay.biome_name),
+            format!("REGION     {}", debug_overlay.region_name),
+            format!("GROUND Y   {}", debug_overlay.ground_y),
+            format!("BIOME Y    {}", debug_overlay.biome_altitude_y),
+            format!("TEMP       {}", debug_overlay.temperature_percent),
+            format!("HUMID      {}", debug_overlay.humidity_percent),
+            format!("CONT       {}", debug_overlay.continentalness_percent),
         ];
-        let right_lines = [
+        let right_lines = vec![
+            "BIOME FIT".to_string(),
+            format!("PRIORITY   {}", debug_overlay.biome_priority),
+            format!(
+                "TEMP BAND  {}",
+                overlay_percent_band(
+                    Some(debug_overlay.biome_temperature_min_percent),
+                    Some(debug_overlay.biome_temperature_max_percent),
+                )
+            ),
+            format!(
+                "HUMID BAND {}",
+                overlay_percent_band(
+                    Some(debug_overlay.biome_humidity_min_percent),
+                    Some(debug_overlay.biome_humidity_max_percent),
+                )
+            ),
+            format!(
+                "ALT BAND   {}",
+                overlay_altitude_band(
+                    debug_overlay.biome_altitude_min,
+                    debug_overlay.biome_altitude_max,
+                )
+            ),
+            format!(
+                "CONT BAND  {}",
+                overlay_percent_band(
+                    debug_overlay.biome_continentalness_min_percent,
+                    debug_overlay.biome_continentalness_max_percent,
+                )
+            ),
+            String::new(),
             "WORLD".to_string(),
-            format!("LOADED   {}", debug_overlay.loaded_chunks),
-            format!("GPU      {}", stats.gpu_chunks),
-            format!("DRAWN    {}", stats.drawn_chunks),
-            format!("MESH     {}", stats.meshing_pending_chunks),
+            format!("LOADED     {}", debug_overlay.loaded_chunks),
+            format!("GPU        {}", stats.gpu_chunks),
+            format!("DRAWN      {}", stats.drawn_chunks),
+            format!("MESH       {}", stats.meshing_pending_chunks),
             String::new(),
             "RENDER".to_string(),
-            format!("FRUSTUM  {}", stats.frustum_culled_chunks),
-            format!("OCCLUDED {}", stats.occlusion_culled_chunks),
-            format!("DIRCULL  {}", stats.directional_culled_draws),
-            format!("OPAQUE   {}", stats.opaque_draws),
-            format!("TRANS    {}", stats.transparent_draws),
-            format!("HIZ      {}", overlay_hiz_label(stats.hiz_enabled)),
-            format!("MODE     {}", overlay_mode_label(self.debug_view_mode)),
+            format!("FRUSTUM    {}", stats.frustum_culled_chunks),
+            format!("OCCLUDED   {}", stats.occlusion_culled_chunks),
+            format!("DIR CULL   {}", stats.directional_culled_draws),
+            format!("OPAQUE     {}", stats.opaque_draws),
+            format!("TRANS      {}", stats.transparent_draws),
+            format!("HIZ        {}", overlay_hiz_label(stats.hiz_enabled)),
+            format!("MODE       {}", overlay_mode_label(self.debug_view_mode)),
         ];
 
         let max_overlay_glyphs = self.overlay_config.max_glyphs;
@@ -75,6 +110,24 @@ impl Renderer {
         );
 
         instances
+    }
+}
+
+fn overlay_percent_band(min: Option<u8>, max: Option<u8>) -> String {
+    match (min, max) {
+        (Some(min), Some(max)) => format!("{min}-{max}"),
+        (Some(min), None) => format!("{min}-100"),
+        (None, Some(max)) => format!("0-{max}"),
+        (None, None) => "ANY".to_string(),
+    }
+}
+
+fn overlay_altitude_band(min: Option<i32>, max: Option<i32>) -> String {
+    match (min, max) {
+        (Some(min), Some(max)) => format!("{min} TO {max}"),
+        (Some(min), None) => format!("{min} UP"),
+        (None, Some(max)) => format!("UP TO {max}"),
+        (None, None) => "ANY".to_string(),
     }
 }
 

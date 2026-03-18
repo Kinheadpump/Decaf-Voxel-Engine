@@ -27,7 +27,7 @@ g = 0.70
 b = 0.95
 
 [render.overlay]
-max_glyphs = 384
+max_glyphs = 768
 glyph_width = 12.0
 glyph_height = 15.0
 padding_x = 8.0
@@ -92,6 +92,22 @@ scale = 0.0095
 octaves = 5
 persistence = 0.52
 lacunarity = 2.0
+
+[world.terrain.density_3d]
+scale = 0.02
+octaves = 4
+persistence = 0.6
+lacunarity = 2.0
+weight = 15.0
+
+[world.terrain.rivers]
+scale = 0.0032
+octaves = 2
+persistence = 0.5
+lacunarity = 2.0
+valley_width = 0.085
+depth = 24.0
+bank_sharpness = 1.6
 
 [world.terrain.temperature]
 scale = 0.0048
