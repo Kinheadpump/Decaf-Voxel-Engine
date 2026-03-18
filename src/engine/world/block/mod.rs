@@ -58,6 +58,7 @@ pub fn create_default_block_registry() -> BlockRegistry {
             .transparent()
             .liquid()
             .replaceable()
+            .raycast_through()
             .textures(BlockTextures::all("water")),
     );
 

@@ -32,7 +32,7 @@ pub struct Player {
 impl Player {
     pub fn from_config(config: &PlayerConfig) -> Self {
         Self {
-            position: Vec3::new(config.spawn_x, config.spawn_y, config.spawn_z),
+            position: Vec3::ZERO,
             velocity: Vec3::ZERO,
             yaw: 0.0,
             pitch: 0.0,

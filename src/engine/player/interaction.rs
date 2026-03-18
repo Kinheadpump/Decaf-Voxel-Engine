@@ -80,10 +80,9 @@ pub fn raycast_blocks(
 
     let step = IVec3::new(axis_step(direction.x), axis_step(direction.y), axis_step(direction.z));
     let mut voxel = origin.floor().as_ivec3();
-    let mut previous_empty =
-        if is_hit_block(world, resolved_blocks, voxel) { None } else { Some(voxel) };
+    let mut previous_placement = placement_candidate(world, resolved_blocks, voxel);
 
-    if previous_empty.is_none() {
+    if is_hit_block(world, resolved_blocks, voxel) {
         return Some(BlockRayHit { block: voxel, placement: None });
     }
 
@@ -107,7 +106,7 @@ pub fn raycast_blocks(
 
         for candidate in boundary_candidates(voxel, step, step_x, step_y, step_z) {
             if is_hit_block(world, resolved_blocks, candidate) {
-                return Some(BlockRayHit { block: candidate, placement: previous_empty });
+                return Some(BlockRayHit { block: candidate, placement: previous_placement });
             }
         }
 
@@ -124,7 +123,9 @@ pub fn raycast_blocks(
             t_max.z += t_delta.z;
         }
 
-        previous_empty = Some(voxel);
+        if let Some(placement) = placement_candidate(world, resolved_blocks, voxel) {
+            previous_placement = Some(placement);
+        }
     }
 
     None
@@ -135,7 +136,17 @@ fn is_hit_block(
     resolved_blocks: &ResolvedBlockRegistry,
     voxel: IVec3,
 ) -> bool {
-    !resolved_blocks.get_voxel(world.get_world_voxel(voxel)).is_air()
+    let block = resolved_blocks.get_voxel(world.get_world_voxel(voxel));
+    !block.is_air() && !block.is_raycast_through()
+}
+
+fn placement_candidate(
+    world: &impl WorldVoxelReader,
+    resolved_blocks: &ResolvedBlockRegistry,
+    voxel: IVec3,
+) -> Option<IVec3> {
+    let block = resolved_blocks.get_voxel(world.get_world_voxel(voxel));
+    block.is_replaceable().then_some(voxel)
 }
 
 fn axis_step(component: f32) -> i32 {
@@ -194,12 +205,12 @@ fn can_place_block_at(
     player: &Player,
     placement: IVec3,
 ) -> bool {
-    let placement_is_air = {
+    let placement_is_replaceable = {
         let accessor = VoxelAccessor { world };
-        resolved_blocks.get_voxel(accessor.get_world_voxel(placement)).is_air()
+        resolved_blocks.get_voxel(accessor.get_world_voxel(placement)).is_replaceable()
     };
 
-    placement_is_air && !player_intersects_voxel(player, placement)
+    placement_is_replaceable && !player_intersects_voxel(player, placement)
 }
 
 fn player_intersects_voxel(player: &Player, voxel: IVec3) -> bool {
@@ -224,22 +235,22 @@ mod tests {
         },
     };
 
-    fn test_blocks() -> (ResolvedBlockRegistry, BlockId) {
+    fn test_blocks() -> (ResolvedBlockRegistry, BlockId, BlockId) {
         let registry = create_default_block_registry();
         let textures = create_texture_registry(&registry);
         let resolved = ResolvedBlockRegistry::build(&registry, textures.layer_map());
         let stone = registry.must_get_id("stone");
-        (resolved, stone)
+        let water = registry.must_get_id("water");
+        (resolved, stone, water)
     }
 
     fn test_player() -> Player {
-        let config = PlayerConfig { spawn_y: 0.0, ..PlayerConfig::default() };
-        Player::from_config(&config)
+        Player::from_config(&PlayerConfig::default())
     }
 
     #[test]
     fn raycast_hits_first_block_and_returns_adjacent_placement() {
-        let (resolved, stone) = test_blocks();
+        let (resolved, stone, _) = test_blocks();
         let mut world = World::new();
         let chunk = crate::engine::world::coord::ChunkCoord(IVec3::ZERO);
 
@@ -262,7 +273,7 @@ mod tests {
 
     #[test]
     fn raycast_does_not_skip_front_blocks_at_voxel_seams() {
-        let (resolved, stone) = test_blocks();
+        let (resolved, stone, _) = test_blocks();
         let mut world = World::new();
         let chunk = crate::engine::world::coord::ChunkCoord(IVec3::ZERO);
 
@@ -287,7 +298,7 @@ mod tests {
 
     #[test]
     fn place_block_rejects_player_intersection() {
-        let (resolved, stone) = test_blocks();
+        let (resolved, stone, _) = test_blocks();
         let mut world = World::new();
         let chunk = crate::engine::world::coord::ChunkCoord(IVec3::ZERO);
         let mut player = test_player();
@@ -311,7 +322,7 @@ mod tests {
 
     #[test]
     fn place_block_rejects_non_air_space() {
-        let (resolved, stone) = test_blocks();
+        let (resolved, stone, _) = test_blocks();
         let mut world = World::new();
         let mut player = test_player();
 
@@ -324,5 +335,84 @@ mod tests {
         player.position = Vec3::new(10.0, 10.0, 10.0);
 
         assert!(!can_place_block_at(&world, &resolved, &player, IVec3::ZERO));
+    }
+
+    #[test]
+    fn raycast_passes_through_water_to_hit_solid_blocks() {
+        let (resolved, stone, water) = test_blocks();
+        let mut world = World::new();
+        let chunk = crate::engine::world::coord::ChunkCoord(IVec3::ZERO);
+
+        world.insert_chunk(chunk, crate::engine::world::chunk::Chunk::new());
+        let _ = world.take_dirty();
+        assert!(world.set_block_world(IVec3::new(0, 0, 1), water));
+        assert!(world.set_block_world(IVec3::new(0, 0, 2), stone));
+
+        let hit = raycast_blocks(
+            &VoxelAccessor { world: &world },
+            &resolved,
+            Vec3::new(0.5, 0.5, 0.5),
+            Vec3::new(0.0, 0.0, 1.0),
+            8.0,
+        )
+        .expect("expected the raycast to continue through water");
+
+        assert_eq!(hit.block, IVec3::new(0, 0, 2));
+        assert_eq!(hit.placement, Some(IVec3::new(0, 0, 1)));
+    }
+
+    #[test]
+    fn place_block_replaces_water() {
+        let (resolved, stone, water) = test_blocks();
+        let mut world = World::new();
+        let chunk = crate::engine::world::coord::ChunkCoord(IVec3::ZERO);
+        let mut player = test_player();
+
+        world.insert_chunk(chunk, crate::engine::world::chunk::Chunk::new());
+        let _ = world.take_dirty();
+        assert!(world.set_block_world(IVec3::new(0, 0, 1), water));
+        assert!(world.set_block_world(IVec3::new(0, 0, 2), water));
+        assert!(world.set_block_world(IVec3::new(0, 0, 3), stone));
+        player.position = Vec3::new(10.0, 10.0, 10.0);
+
+        assert!(place_block_in_front(
+            &mut world,
+            &resolved,
+            &player,
+            Vec3::new(0.5, 0.5, 0.5),
+            Vec3::new(0.0, 0.0, 1.0),
+            8.0,
+            stone,
+        ));
+
+        let voxel = {
+            let accessor = VoxelAccessor { world: &world };
+            accessor.get_world_voxel(IVec3::new(0, 0, 2))
+        };
+        assert_eq!(voxel.block_id(), stone);
+    }
+
+    #[test]
+    fn remove_block_skips_water_and_breaks_stone_behind_it() {
+        let (resolved, stone, water) = test_blocks();
+        let mut world = World::new();
+        let chunk = crate::engine::world::coord::ChunkCoord(IVec3::ZERO);
+
+        world.insert_chunk(chunk, crate::engine::world::chunk::Chunk::new());
+        let _ = world.take_dirty();
+        assert!(world.set_block_world(IVec3::new(0, 0, 1), water));
+        assert!(world.set_block_world(IVec3::new(0, 0, 2), stone));
+
+        assert!(remove_block_in_front(
+            &mut world,
+            &resolved,
+            Vec3::new(0.5, 0.5, 0.5),
+            Vec3::new(0.0, 0.0, 1.0),
+            8.0,
+        ));
+
+        let accessor = VoxelAccessor { world: &world };
+        assert_eq!(accessor.get_world_voxel(IVec3::new(0, 0, 1)).block_id(), water);
+        assert_eq!(accessor.get_world_voxel(IVec3::new(0, 0, 2)).block_id(), BlockId::AIR);
     }
 }

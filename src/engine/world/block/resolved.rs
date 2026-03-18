@@ -60,6 +60,16 @@ impl ResolvedBlock {
     pub fn is_no_cull(&self) -> bool {
         self.flags.contains(BlockFlags::NO_CULL)
     }
+
+    #[inline]
+    pub fn is_replaceable(&self) -> bool {
+        self.flags.contains(BlockFlags::REPLACEABLE)
+    }
+
+    #[inline]
+    pub fn is_raycast_through(&self) -> bool {
+        self.flags.contains(BlockFlags::RAYCAST_THROUGH)
+    }
 }
 
 #[derive(Clone)]

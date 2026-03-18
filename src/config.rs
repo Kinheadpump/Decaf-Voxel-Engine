@@ -42,6 +42,9 @@ pub struct RenderConfig {
     pub render_radius_xz: i32,
     pub render_radius_y: i32,
     pub stream_generation_budget: usize,
+    pub stream_max_inflight_generations: usize,
+    pub generation_worker_count: usize,
+    pub meshing_worker_count: usize,
     pub enable_hiz_occlusion: bool,
     pub initial_face_capacity: u32,
     pub max_visible_draws: usize,
@@ -57,6 +60,9 @@ impl Default for RenderConfig {
             render_radius_xz: 4,
             render_radius_y: 1,
             stream_generation_budget: 16,
+            stream_max_inflight_generations: 64,
+            generation_worker_count: 0,
+            meshing_worker_count: 0,
             enable_hiz_occlusion: false,
             initial_face_capacity: 4_000_000,
             max_visible_draws: 32_768,
@@ -110,7 +116,7 @@ pub struct OverlayConfig {
 impl Default for OverlayConfig {
     fn default() -> Self {
         Self {
-            max_glyphs: 256,
+            max_glyphs: 384,
             glyph_width: 12.0,
             glyph_height: 15.0,
             padding_x: 8.0,
@@ -147,26 +153,142 @@ impl Default for HiZOcclusionConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct WorldConfig {
     pub seed: u64,
-    pub surface_level: i32,
-    pub soil_depth: i32,
+    pub biomes_file: String,
+    pub terrain: TerrainConfig,
 }
 
 impl Default for WorldConfig {
     fn default() -> Self {
-        Self { seed: 12345, surface_level: 0, soil_depth: 4 }
+        Self {
+            seed: 12345,
+            biomes_file: "biomes.toml".to_string(),
+            terrain: TerrainConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(default)]
+pub struct TerrainConfig {
+    pub sea_level: i32,
+    pub dirt_depth: u8,
+    pub continentalness: NoiseConfig,
+    pub continentalness_contrast: f32,
+    pub detail: NoiseConfig,
+    pub detail_amplitude: f32,
+    pub biome_blend: f32,
+    pub climate_contrast: f32,
+    pub temperature: NoiseConfig,
+    pub humidity: NoiseConfig,
+    pub mountain_start_roughness: f32,
+    pub mountain_peak_boost: f32,
+    pub mountain_peak_sharpness: f32,
+    pub continental_regions: ContinentalRegionsConfig,
+}
+
+impl Default for TerrainConfig {
+    fn default() -> Self {
+        Self {
+            sea_level: 0,
+            dirt_depth: 2,
+            continentalness: NoiseConfig {
+                scale: 0.0022,
+                octaves: 2,
+                persistence: 0.55,
+                lacunarity: 2.0,
+            },
+            continentalness_contrast: 1.3,
+            detail: NoiseConfig { scale: 0.0095, octaves: 5, persistence: 0.52, lacunarity: 2.0 },
+            detail_amplitude: 56.0,
+            biome_blend: 0.10,
+            climate_contrast: 1.35,
+            temperature: NoiseConfig {
+                scale: 0.0048,
+                octaves: 2,
+                persistence: 0.5,
+                lacunarity: 2.0,
+            },
+            humidity: NoiseConfig { scale: 0.0048, octaves: 2, persistence: 0.5, lacunarity: 2.0 },
+            mountain_start_roughness: 1.25,
+            mountain_peak_boost: 128.0,
+            mountain_peak_sharpness: 1.85,
+            continental_regions: ContinentalRegionsConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(default)]
+pub struct NoiseConfig {
+    pub scale: f32,
+    pub octaves: u32,
+    pub persistence: f32,
+    pub lacunarity: f32,
+}
+
+impl Default for NoiseConfig {
+    fn default() -> Self {
+        Self { scale: 0.001, octaves: 4, persistence: 0.5, lacunarity: 2.0 }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(default)]
+pub struct ContinentalRegionsConfig {
+    pub deep_ocean: ContinentalRegionConfig,
+    pub ocean: ContinentalRegionConfig,
+    pub coast: ContinentalRegionConfig,
+    pub plains: ContinentalRegionConfig,
+    pub highlands: ContinentalRegionConfig,
+    pub mountains: ContinentalRegionConfig,
+}
+
+impl Default for ContinentalRegionsConfig {
+    fn default() -> Self {
+        Self {
+            deep_ocean: ContinentalRegionConfig {
+                max_value: 0.16,
+                base_height: -48.0,
+                roughness: 0.12,
+            },
+            ocean: ContinentalRegionConfig { max_value: 0.30, base_height: -28.0, roughness: 0.22 },
+            coast: ContinentalRegionConfig { max_value: 0.42, base_height: -10.0, roughness: 0.40 },
+            plains: ContinentalRegionConfig { max_value: 0.62, base_height: 14.0, roughness: 0.85 },
+            highlands: ContinentalRegionConfig {
+                max_value: 0.80,
+                base_height: 42.0,
+                roughness: 1.95,
+            },
+            mountains: ContinentalRegionConfig {
+                max_value: 1.0,
+                base_height: 124.0,
+                roughness: 3.60,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(default)]
+pub struct ContinentalRegionConfig {
+    pub max_value: f32,
+    pub base_height: f32,
+    pub roughness: f32,
+}
+
+impl Default for ContinentalRegionConfig {
+    fn default() -> Self {
+        ContinentalRegionsConfig::default().plains
     }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(default)]
 pub struct PlayerConfig {
-    pub spawn_x: f32,
-    pub spawn_y: f32,
-    pub spawn_z: f32,
     pub reach_distance: f32,
     pub mouse_sensitivity: f32,
     pub eye_height: f32,
@@ -191,9 +313,6 @@ pub struct PlayerConfig {
 impl Default for PlayerConfig {
     fn default() -> Self {
         Self {
-            spawn_x: 0.0,
-            spawn_y: 10.0,
-            spawn_z: 0.0,
             reach_distance: 6.0,
             mouse_sensitivity: 0.0022,
             eye_height: 1.62,

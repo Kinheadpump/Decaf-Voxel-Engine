@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use bytemuck::{Pod, Zeroable};
 
 use crate::engine::core::types::{CHUNK_SIZE_U32, CHUNK_VOLUME, MAX_TEXTURE_LAYERS};
@@ -171,18 +173,39 @@ pub struct TextGlyphInstance {
     pub _pad: [u32; 3],
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct DebugOverlayInput {
     pub fps: u32,
     pub loaded_chunks: u32,
     pub player_voxel: [i32; 3],
     pub player_chunk: [i32; 3],
     pub player_facing: &'static str,
+    pub biome_name: Arc<str>,
+    pub region_name: &'static str,
+    pub surface_y: i32,
+    pub temperature_percent: u8,
+    pub humidity_percent: u8,
+}
+
+impl Default for DebugOverlayInput {
+    fn default() -> Self {
+        Self {
+            fps: 0,
+            loaded_chunks: 0,
+            player_voxel: [0; 3],
+            player_chunk: [0; 3],
+            player_facing: "",
+            biome_name: Arc::<str>::from(""),
+            region_name: "",
+            surface_y: 0,
+            temperature_percent: 0,
+            humidity_percent: 0,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RenderStats {
-    pub loaded_chunks: u32,
     pub gpu_chunks: u32,
     pub drawn_chunks: u32,
     pub frustum_culled_chunks: u32,

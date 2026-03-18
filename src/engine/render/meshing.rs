@@ -119,13 +119,11 @@ pub struct ThreadedMesher {
 }
 
 impl ThreadedMesher {
-    pub fn new(resolved_blocks: ResolvedBlockRegistry) -> Self {
+    pub fn new(resolved_blocks: ResolvedBlockRegistry, worker_count: usize) -> Self {
         let (job_tx, job_rx) = unbounded::<MeshJob>();
         let (result_tx, result_rx) = unbounded::<WorkerMeshResult>();
         let resolved_blocks = Arc::new(resolved_blocks);
-        let worker_count = thread::available_parallelism()
-            .map(|count| count.get().saturating_sub(1).max(1))
-            .unwrap_or(1);
+        let worker_count = worker_count.max(1);
         crate::log_debug!("Starting {worker_count} chunk meshing worker threads");
 
         let mut workers = Vec::with_capacity(worker_count);

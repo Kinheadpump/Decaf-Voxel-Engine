@@ -45,6 +45,11 @@ impl BlockBuilder {
         self
     }
 
+    pub fn raycast_through(mut self) -> Self {
+        self.flags |= BlockFlags::RAYCAST_THROUGH;
+        self
+    }
+
     pub fn textures(mut self, textures: BlockTextures) -> Self {
         self.textures = Some(textures);
         self

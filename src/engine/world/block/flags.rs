@@ -10,5 +10,6 @@ bitflags! {
         const NO_CULL       = 1 << 3;
         const REPLACEABLE   = 1 << 4;
         const LIQUID        = 1 << 5;
+        const RAYCAST_THROUGH = 1 << 6;
     }
 }

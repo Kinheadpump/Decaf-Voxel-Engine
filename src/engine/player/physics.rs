@@ -324,8 +324,7 @@ mod tests {
     use winit::keyboard::KeyCode;
 
     fn test_player() -> Player {
-        let config = PlayerConfig { spawn_y: 0.0, ..PlayerConfig::default() };
-        Player::from_config(&config)
+        Player::from_config(&PlayerConfig::default())
     }
 
     #[test]

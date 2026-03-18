@@ -1,14 +1,17 @@
 [debug]
-enable_profiler = true
+enable_profiler = false
 
 [window]
 width = 1280
 height = 720
 
 [render]
-render_radius_xz = 4
-render_radius_y = 1
+render_radius_xz = 12
+render_radius_y = 4
 stream_generation_budget = 16
+stream_max_inflight_generations = 64
+generation_worker_count = 0
+meshing_worker_count = 0
 enable_hiz_occlusion = false
 initial_face_capacity = 4000000
 max_visible_draws = 32768
@@ -23,7 +26,7 @@ g = 0.70
 b = 0.95
 
 [render.overlay]
-max_glyphs = 256
+max_glyphs = 384
 glyph_width = 12.0
 glyph_height = 15.0
 padding_x = 8.0
@@ -41,9 +44,6 @@ near_chunk_skip_distance = 48.0
 occlusion_depth_bias = 0.0001
 
 [player]
-spawn_x = 0.0
-spawn_y = 10.0
-spawn_z = 0.0
 reach_distance = 6.0
 mouse_sensitivity = 0.0022
 eye_height = 1.62
@@ -66,5 +66,69 @@ fly_friction = 10.0
 
 [world]
 seed = 12345
-surface_level = 0
-soil_depth = 4
+biomes_file = "biomes.toml"
+
+[world.terrain]
+sea_level = 0
+dirt_depth = 2
+continentalness_contrast = 1.3
+detail_amplitude = 56.0
+biome_blend = 0.10
+climate_contrast = 1.35
+mountain_start_roughness = 1.25
+mountain_peak_boost = 128.0
+mountain_peak_sharpness = 1.85
+
+[world.terrain.continentalness]
+scale = 0.0022
+octaves = 2
+persistence = 0.55
+lacunarity = 2.0
+
+[world.terrain.detail]
+scale = 0.0095
+octaves = 5
+persistence = 0.52
+lacunarity = 2.0
+
+[world.terrain.temperature]
+scale = 0.0048
+octaves = 2
+persistence = 0.5
+lacunarity = 2.0
+
+[world.terrain.humidity]
+scale = 0.0048
+octaves = 2
+persistence = 0.5
+lacunarity = 2.0
+
+[world.terrain.continental_regions.deep_ocean]
+max_value = 0.16
+base_height = -48.0
+roughness = 0.12
+
+[world.terrain.continental_regions.ocean]
+max_value = 0.30
+base_height = -28.0
+roughness = 0.22
+
+[world.terrain.continental_regions.coast]
+max_value = 0.42
+base_height = -10.0
+roughness = 0.40
+
+[world.terrain.continental_regions.plains]
+max_value = 0.62
+base_height = 14.0
+roughness = 0.85
+
+[world.terrain.continental_regions.highlands]
+max_value = 0.80
+base_height = 42.0
+roughness = 1.95
+
+[world.terrain.continental_regions.mountains]
+max_value = 1.0
+base_height = 124.0
+roughness = 3.60

@@ -30,10 +30,7 @@ use crate::{
 };
 
 use self::{
-    draw::{
-        build_draw_ref_bytes, chunk_face_can_face_camera, next_face_capacity,
-        transparent_batch_center,
-    },
+    draw::{build_draw_ref_bytes, next_face_capacity, transparent_batch_center},
     pipelines::{create_overlay_pipeline, create_voxel_pipeline, create_wireframe_pipeline},
 };
 
@@ -97,6 +94,7 @@ impl Renderer {
         resolved_blocks: ResolvedBlockRegistry,
         texture_registry: &TextureRegistry,
         render_config: &RenderConfig,
+        meshing_worker_count: usize,
     ) -> anyhow::Result<Self> {
         let instance = wgpu::Instance::default();
         let size = window.inner_size();
@@ -245,7 +243,7 @@ impl Renderer {
         });
 
         let materials = Materials::from_texture_registry(&device, &queue, texture_registry)?;
-        let mesher = ThreadedMesher::new(resolved_blocks.clone());
+        let mesher = ThreadedMesher::new(resolved_blocks.clone(), meshing_worker_count);
 
         let camera_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("camera_bgl"),
@@ -629,8 +627,6 @@ impl Renderer {
         let frustum = Frustum::from_camera(camera);
         let mut frustum_culled_chunks = 0u32;
         let mut occlusion_culled_chunks = 0u32;
-        let mut directional_culled_draws = 0u32;
-
         for (&coord, entry) in &self.gpu_entries {
             let origin = coord.world_origin();
             let min = origin.as_vec3();
@@ -651,17 +647,9 @@ impl Renderer {
             }
 
             for dir in 0..6usize {
-                let faces_camera =
-                    chunk_face_can_face_camera(camera.position, min, max, dir as u32);
-
                 if let Some(slice) = entry.faces[RenderBucket::Opaque as usize][dir]
                     && slice.count > 0
                 {
-                    if !faces_camera {
-                        directional_culled_draws += 1;
-                        continue;
-                    }
-
                     opaque_draws.push(DrawMeta {
                         chunk_origin: [origin.x, origin.y, origin.z, 0],
                         face_dir: dir as u32,
@@ -673,11 +661,6 @@ impl Renderer {
                 if let Some(slice) = entry.faces[RenderBucket::Transparent as usize][dir]
                     && slice.count > 0
                 {
-                    if !faces_camera {
-                        directional_culled_draws += 1;
-                        continue;
-                    }
-
                     let batch_center = transparent_batch_center(origin, dir as u32);
                     let distance_sq = (batch_center - camera.position).length_squared();
                     transparent_draws.push((
@@ -740,15 +723,11 @@ impl Renderer {
         }
 
         let current_stats = RenderStats {
-            loaded_chunks: self
-                .debug_overlay
-                .map(|overlay| overlay.loaded_chunks)
-                .unwrap_or(self.gpu_entries.len() as u32),
             gpu_chunks: self.gpu_entries.len() as u32,
             drawn_chunks,
             frustum_culled_chunks,
             occlusion_culled_chunks,
-            directional_culled_draws,
+            directional_culled_draws: 0,
             opaque_draws: opaque_count as u32,
             transparent_draws: (staged_draws.len() - opaque_count) as u32,
             meshing_pending_chunks: self.mesher.pending_count() as u32,

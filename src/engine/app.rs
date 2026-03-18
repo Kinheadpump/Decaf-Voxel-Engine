@@ -12,8 +12,9 @@ use winit::{
 };
 
 use crate::{
-    config::Config,
+    config::{Config, PlayerConfig, RenderConfig},
     engine::{
+        core::math::Vec3,
         input::InputState,
         player::{
             controller::{Player, camera_from_player},
@@ -26,8 +27,9 @@ use crate::{
             renderer::Renderer,
         },
         world::{
+            biome::BiomeTable,
             block::{create_default_block_registry, resolved::ResolvedBlockRegistry},
-            generator::FlatGenerator,
+            generator::{ChunkGenerator, StagedGenerator},
             storage::World,
         },
     },
@@ -36,7 +38,7 @@ use crate::{
 
 use self::{
     fps::FpsCounter,
-    streaming::{meshing_focus_from_player, stream_chunks_around_focus},
+    streaming::{WorldStreamer, meshing_focus_from_player},
 };
 
 pub async fn run(config: Config) -> anyhow::Result<()> {
@@ -48,18 +50,30 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     let render_radius_xz = render_config.render_radius_xz.max(0);
     let render_radius_y = render_config.render_radius_y.max(0);
     let stream_generation_budget = render_config.stream_generation_budget;
+    let stream_max_inflight_generations = render_config.stream_max_inflight_generations;
+    let (generation_worker_count, meshing_worker_count) = background_worker_counts(&render_config);
 
     let block_registry = create_default_block_registry();
     let stone_block_id = block_registry.must_get_id("stone");
+    let water_block_id = block_registry.must_get_id("water");
     let texture_registry = create_texture_registry(&block_registry);
     let resolved_blocks =
         ResolvedBlockRegistry::build(&block_registry, texture_registry.layer_map());
-    let generator = FlatGenerator::new(
-        block_registry.must_get_id("grass"),
-        block_registry.must_get_id("dirt"),
-        block_registry.must_get_id("stone"),
-        world_config.surface_level,
-        world_config.soil_depth,
+    let biomes = BiomeTable::load_from_file(&world_config.biomes_file, &block_registry)?;
+    let staged_generator = Arc::new(StagedGenerator::new(
+        world_config.seed,
+        water_block_id,
+        world_config.terrain,
+        biomes,
+    ));
+    let spawn_position = spawn_position_at_world_origin(&staged_generator, &player_config);
+    let generator: Arc<dyn ChunkGenerator> = staged_generator.clone();
+    let mut streamer =
+        WorldStreamer::new(generator, generation_worker_count, stream_max_inflight_generations);
+    crate::log_info!(
+        "Background workers: generation {}, meshing {}",
+        generation_worker_count,
+        meshing_worker_count
     );
 
     let event_loop = EventLoop::new()?;
@@ -71,21 +85,20 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     );
 
     let mut player = Player::from_config(&player_config);
+    player.position = spawn_position;
     let initial_focus = meshing_focus_from_player(&player);
     let mut world = World::new();
 
-    stream_chunks_around_focus(
-        &mut world,
-        None,
-        &generator,
-        initial_focus,
-        render_radius_xz,
-        render_radius_y,
-        0,
-    );
+    streamer.finish_generation(&mut world, initial_focus, render_radius_xz, render_radius_y, 0)?;
 
-    let mut renderer =
-        Renderer::new(window.clone(), resolved_blocks, &texture_registry, &render_config).await?;
+    let mut renderer = Renderer::new(
+        window.clone(),
+        resolved_blocks,
+        &texture_registry,
+        &render_config,
+        meshing_worker_count,
+    )
+    .await?;
     renderer.finish_meshing(&mut world, initial_focus)?;
 
     let mut input = InputState::new();
@@ -166,12 +179,22 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
                 let player_voxel = player.position.floor().as_ivec3();
                 let player_chunk =
                     crate::engine::world::coord::ChunkCoord::from_world_voxel(player_voxel).0;
-                renderer.set_debug_overlay(show_fps_overlay.then_some(DebugOverlayInput {
-                    fps: fps_counter.displayed_fps(),
-                    loaded_chunks: world.chunks.len() as u32,
-                    player_voxel: [player_voxel.x, player_voxel.y, player_voxel.z],
-                    player_chunk: [player_chunk.x, player_chunk.y, player_chunk.z],
-                    player_facing: player.cardinal_facing(),
+                renderer.set_debug_overlay(show_fps_overlay.then(|| {
+                    let terrain_debug =
+                        staged_generator.debug_sample_at(player_voxel.x, player_voxel.z);
+
+                    DebugOverlayInput {
+                        fps: fps_counter.displayed_fps(),
+                        loaded_chunks: world.chunks.len() as u32,
+                        player_voxel: [player_voxel.x, player_voxel.y, player_voxel.z],
+                        player_chunk: [player_chunk.x, player_chunk.y, player_chunk.z],
+                        player_facing: player.cardinal_facing(),
+                        biome_name: terrain_debug.biome_name,
+                        region_name: terrain_debug.region_name,
+                        surface_y: terrain_debug.surface_y,
+                        temperature_percent: terrain_debug.temperature_percent,
+                        humidity_percent: terrain_debug.humidity_percent,
+                    }
                 }));
 
                 if let Err(err) = renderer.render(&camera) {
@@ -226,15 +249,18 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             }
 
             let focus = meshing_focus_from_player(&player);
-            stream_chunks_around_focus(
+            if let Err(err) = streamer.pump(
                 &mut world,
                 Some(&mut renderer),
-                &generator,
                 focus,
                 render_radius_xz,
                 render_radius_y,
                 stream_generation_budget,
-            );
+            ) {
+                crate::log_error!("failed to process chunk generation jobs: {err:#}");
+                elwt.exit();
+                return;
+            }
 
             if let Err(err) = renderer.pump_meshing(&mut world, focus) {
                 crate::log_error!("failed to process chunk meshing jobs: {err:#}");
@@ -264,4 +290,74 @@ fn release_cursor(window: &Window, input: &mut InputState) {
     let _ = window.set_cursor_grab(CursorGrabMode::None);
     window.set_cursor_visible(true);
     input.cursor_grabbed = false;
+}
+
+fn background_worker_counts(render_config: &RenderConfig) -> (usize, usize) {
+    let available_workers = std::thread::available_parallelism()
+        .map(|count| count.get().saturating_sub(1).max(1))
+        .unwrap_or(1);
+    let generation_worker_count = if render_config.generation_worker_count == 0 {
+        (available_workers / 3).max(1)
+    } else {
+        render_config.generation_worker_count.max(1)
+    };
+    let meshing_worker_count = if render_config.meshing_worker_count == 0 {
+        available_workers.saturating_sub(generation_worker_count).max(1)
+    } else {
+        render_config.meshing_worker_count.max(1)
+    };
+
+    (generation_worker_count, meshing_worker_count)
+}
+
+fn spawn_position_at_world_origin(
+    generator: &StagedGenerator,
+    player_config: &PlayerConfig,
+) -> Vec3 {
+    let spawn_x = 0.0;
+    let spawn_z = 0.0;
+    let min_x = (spawn_x - player_config.radius).floor() as i32;
+    let max_x = (spawn_x + player_config.radius).floor() as i32;
+    let min_z = (spawn_z - player_config.radius).floor() as i32;
+    let max_z = (spawn_z + player_config.radius).floor() as i32;
+
+    let support_top = (min_z..=max_z)
+        .flat_map(|world_z| {
+            (min_x..=max_x).map(move |world_x| generator.top_occupied_y_at(world_x, world_z))
+        })
+        .max()
+        .unwrap_or(generator.terrain.sea_level);
+
+    Vec3::new(spawn_x, support_top as f32 + 1.0, spawn_z)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::TerrainConfig;
+    use crate::engine::world::{biome::BiomeTable, block::id::BlockId};
+
+    #[test]
+    fn spawn_position_sits_above_highest_column_under_player() {
+        let generator = StagedGenerator::new(
+            12345,
+            BlockId(4),
+            TerrainConfig::default(),
+            BiomeTable::single(BlockId(1), BlockId(2), BlockId(3)),
+        );
+        let player_config = PlayerConfig { radius: 0.3, ..PlayerConfig::default() };
+        let spawn = spawn_position_at_world_origin(&generator, &player_config);
+
+        let mut expected_support = i32::MIN;
+        for world_z in -1..=0 {
+            for world_x in -1..=0 {
+                expected_support =
+                    expected_support.max(generator.top_occupied_y_at(world_x, world_z));
+            }
+        }
+
+        assert_eq!(spawn.x, 0.0);
+        assert_eq!(spawn.z, 0.0);
+        assert_eq!(spawn.y, expected_support as f32 + 1.0);
+    }
 }
