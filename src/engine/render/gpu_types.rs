@@ -4,9 +4,12 @@ use bytemuck::{Pod, Zeroable};
 
 use crate::engine::core::types::{CHUNK_SIZE_U32, CHUNK_VOLUME, MAX_TEXTURE_LAYERS};
 
-#[repr(transparent)]
+#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
-pub struct PackedFace(pub u32);
+pub struct PackedFace {
+    pub value: u32,
+    pub tint: u32,
+}
 
 impl PackedFace {
     // bits:
@@ -23,6 +26,7 @@ impl PackedFace {
         texture_id: u32,
         width_minus_one: u32,
         height_minus_one: u32,
+        tint: u32,
     ) -> Self {
         debug_assert!(x < 32);
         debug_assert!(y < 32);
@@ -31,14 +35,31 @@ impl PackedFace {
         debug_assert!(width_minus_one < 32);
         debug_assert!(height_minus_one < 32);
 
-        Self(
-            x | (y << 5)
+        Self {
+            value: x
+                | (y << 5)
                 | (z << 10)
                 | (texture_id << 15)
                 | (width_minus_one << 22)
                 | (height_minus_one << 27),
-        )
+            tint,
+        }
     }
+}
+
+pub const FACE_TINT_MODE_NONE: u32 = 0;
+pub const FACE_TINT_MODE_GRASS: u32 = 1;
+pub const FACE_TINT_MODE_MULTIPLY: u32 = 2;
+pub const DEFAULT_FACE_TINT: u32 = pack_face_tint(FACE_TINT_MODE_NONE, [255, 255, 255]);
+
+#[inline]
+pub const fn pack_rgb8(color: [u8; 3]) -> u32 {
+    (color[0] as u32) | ((color[1] as u32) << 8) | ((color[2] as u32) << 16)
+}
+
+#[inline]
+pub const fn pack_face_tint(mode: u32, color: [u8; 3]) -> u32 {
+    pack_rgb8(color) | ((mode & 0xff) << 24)
 }
 
 #[repr(usize)]

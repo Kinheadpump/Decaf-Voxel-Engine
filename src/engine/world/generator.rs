@@ -8,7 +8,7 @@ use crate::engine::{
     world::{
         biome::{BiomeBlendSample, BiomeTable},
         block::id::BlockId,
-        chunk::{Chunk, voxel_index},
+        chunk::{Chunk, ColumnBiomeTints, column_index, voxel_index},
         coord::ChunkCoord,
         voxel::Voxel,
     },
@@ -27,6 +27,8 @@ struct ColumnSample {
     surface_block: BlockId,
     soil_block: BlockId,
     deep_block: BlockId,
+    grass_color: [u8; 3],
+    foliage_color: [u8; 3],
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -105,6 +107,11 @@ impl StagedGenerator {
                 let column = columns[column_index(local_x, local_z)];
                 let top_solid_y = column.surface_height.floor() as i32;
                 let dirt_depth = self.terrain.dirt_depth as i32;
+                chunk.set_biome_tints(
+                    local_x,
+                    local_z,
+                    ColumnBiomeTints { grass: column.grass_color, foliage: column.foliage_color },
+                );
 
                 for local_y in (0..CHUNK_SIZE).rev() {
                     let world_y = origin.y + local_y as i32;
@@ -156,6 +163,8 @@ impl StagedGenerator {
             surface_block: biome.dominant.surface_block,
             soil_block: biome.dominant.soil_block,
             deep_block: biome.dominant.deep_block,
+            grass_color: biome.dominant.grass_color,
+            foliage_color: biome.dominant.foliage_color,
         }
     }
 
@@ -258,11 +267,6 @@ impl ChunkGenerator for StagedGenerator {
             self.generate_with_scratch(coord, chunk, &mut scratch);
         });
     }
-}
-
-#[inline]
-fn column_index(x: usize, z: usize) -> usize {
-    x + z * COLUMN_STRIDE
 }
 
 #[inline]

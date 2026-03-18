@@ -1,16 +1,18 @@
 use crate::engine::world::block::{
     definition::BlockDefinition, flags::BlockFlags, id::BlockId, textures::BlockTextures,
+    tint::BlockTint,
 };
 
 pub struct BlockBuilder {
     name: String,
     flags: BlockFlags,
     textures: Option<BlockTextures>,
+    tint: BlockTint,
 }
 
 impl BlockBuilder {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), flags: BlockFlags::NONE, textures: None }
+        Self { name: name.into(), flags: BlockFlags::NONE, textures: None, tint: BlockTint::None }
     }
 
     pub fn solid(mut self) -> Self {
@@ -55,12 +57,18 @@ impl BlockBuilder {
         self
     }
 
+    pub fn tint(mut self, tint: BlockTint) -> Self {
+        self.tint = tint;
+        self
+    }
+
     pub fn build(self, id: BlockId) -> BlockDefinition {
         BlockDefinition {
             id,
             name: self.name,
             flags: self.flags,
             textures: self.textures.unwrap_or_else(|| BlockTextures::all("missing")),
+            tint: self.tint,
         }
     }
 }

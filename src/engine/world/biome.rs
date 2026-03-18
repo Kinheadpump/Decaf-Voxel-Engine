@@ -10,6 +10,7 @@ const BIOME_LUT_CELL_COUNT: usize = BIOME_LUT_AXIS * BIOME_LUT_AXIS;
 const MIN_BIOME_AREA: f32 = 0.06;
 const MAX_SPECIFICITY_BIAS: f32 = 4.0;
 const PRIORITY_BIAS_STEP: f32 = 0.25;
+const DEFAULT_TINT_COLOR: [u8; 3] = [255, 255, 255];
 
 #[derive(Debug, Clone)]
 pub struct BiomeTable {
@@ -38,6 +39,8 @@ impl BiomeTable {
             surface_block,
             soil_block,
             deep_block,
+            grass_color: DEFAULT_TINT_COLOR,
+            foliage_color: DEFAULT_TINT_COLOR,
             height_offset: 0.0,
             roughness_multiplier: 1.0,
         };
@@ -148,6 +151,8 @@ pub struct ResolvedBiome {
     pub surface_block: BlockId,
     pub soil_block: BlockId,
     pub deep_block: BlockId,
+    pub grass_color: [u8; 3],
+    pub foliage_color: [u8; 3],
     pub height_offset: f32,
     pub roughness_multiplier: f32,
     priority: i32,
@@ -187,6 +192,8 @@ impl ResolvedBiome {
             surface_block: resolve_block(&definition.surface_block, block_registry)?,
             soil_block: resolve_block(&definition.soil_block, block_registry)?,
             deep_block: resolve_block(&definition.deep_block, block_registry)?,
+            grass_color: definition.grass_color,
+            foliage_color: definition.foliage_color,
             height_offset: definition.height_offset,
             roughness_multiplier,
         })
@@ -223,6 +230,10 @@ struct BiomeDefinition {
     surface_block: String,
     soil_block: String,
     deep_block: String,
+    #[serde(default = "default_tint_color")]
+    grass_color: [u8; 3],
+    #[serde(default = "default_tint_color")]
+    foliage_color: [u8; 3],
     #[serde(default)]
     height_offset: f32,
     #[serde(default = "default_roughness_multiplier")]
@@ -231,6 +242,10 @@ struct BiomeDefinition {
 
 fn default_roughness_multiplier() -> f32 {
     1.0
+}
+
+fn default_tint_color() -> [u8; 3] {
+    DEFAULT_TINT_COLOR
 }
 
 fn compile_lookup(
@@ -433,5 +448,31 @@ roughness_multiplier = 2.0
         assert_eq!(blend.dominant.name.as_ref(), "dry");
         assert!(blend.height_offset > 0.0 && blend.height_offset < 12.0);
         assert!(blend.roughness_multiplier > 1.0 && blend.roughness_multiplier < 2.0);
+    }
+
+    #[test]
+    fn biome_table_loads_optional_grass_and_foliage_colors() {
+        let table = biome_table_from_toml(
+            r#"
+fallback_biome = "temperate"
+
+[[biomes]]
+name = "temperate"
+priority = 0
+temperature_min = 0.0
+temperature_max = 1.0
+humidity_min = 0.0
+humidity_max = 1.0
+surface_block = "grass"
+soil_block = "dirt"
+deep_block = "stone"
+grass_color = [120, 180, 80]
+foliage_color = [90, 140, 60]
+"#,
+        );
+
+        let biome = table.sample(0.5, 0.5);
+        assert_eq!(biome.grass_color, [120, 180, 80]);
+        assert_eq!(biome.foliage_color, [90, 140, 60]);
     }
 }

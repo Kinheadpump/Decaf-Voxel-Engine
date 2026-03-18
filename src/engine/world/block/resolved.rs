@@ -1,6 +1,7 @@
 use crate::engine::core::types::FaceDir;
 use crate::engine::world::block::{
     flags::BlockFlags, id::BlockId, registry::BlockRegistry, textures::TextureRef,
+    tint::ResolvedFaceTints,
 };
 use std::collections::HashMap;
 
@@ -33,6 +34,7 @@ pub struct ResolvedBlock {
     pub id: BlockId,
     pub flags: BlockFlags,
     pub textures: ResolvedFaceTextures,
+    pub tints: ResolvedFaceTints,
 }
 
 impl ResolvedBlock {
@@ -127,7 +129,12 @@ impl ResolvedBlockRegistry {
                 },
             };
 
-            blocks.push(ResolvedBlock { id: def.id, flags: def.flags, textures });
+            blocks.push(ResolvedBlock {
+                id: def.id,
+                flags: def.flags,
+                textures,
+                tints: ResolvedFaceTints::from_block_tint(def.tint),
+            });
         }
 
         Self { blocks }

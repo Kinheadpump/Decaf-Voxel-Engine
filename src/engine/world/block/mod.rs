@@ -5,10 +5,12 @@ pub mod id;
 pub mod registry;
 pub mod resolved;
 pub mod textures;
+pub mod tint;
 
 use builder::BlockBuilder;
 use registry::BlockRegistry;
 use textures::BlockTextures;
+use tint::{BiomeTint, BlockTint};
 
 pub fn create_default_block_registry() -> BlockRegistry {
     let mut registry = BlockRegistry::new();
@@ -16,11 +18,11 @@ pub fn create_default_block_registry() -> BlockRegistry {
     registry.register(BlockBuilder::new("air").replaceable().textures(BlockTextures::all("air")));
 
     registry.register(
-        BlockBuilder::new("grass").solid().opaque().textures(BlockTextures::top_bottom_sides(
-            "grass_top",
-            "dirt",
-            "grass_side",
-        )),
+        BlockBuilder::new("grass")
+            .solid()
+            .opaque()
+            .textures(BlockTextures::top_bottom_sides("grass_top", "dirt", "grass_side"))
+            .tint(BlockTint::top_bottom_sides(BiomeTint::Grass, BiomeTint::None, BiomeTint::None)),
     );
 
     registry
@@ -50,7 +52,8 @@ pub fn create_default_block_registry() -> BlockRegistry {
             .solid()
             .transparent()
             .no_cull()
-            .textures(BlockTextures::all("leaves")),
+            .textures(BlockTextures::all("leaves"))
+            .tint(BlockTint::all(BiomeTint::Foliage)),
     );
 
     registry.register(
