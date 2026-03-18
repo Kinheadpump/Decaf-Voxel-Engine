@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
 
-use crate::engine::core::types::{CHUNK_SIZE_U32, CHUNK_VOLUME, MAX_TEXTURE_LAYERS};
+use crate::{
+    config::SkyConfig,
+    engine::core::types::{CHUNK_SIZE_U32, CHUNK_VOLUME, MAX_TEXTURE_LAYERS},
+};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
@@ -164,16 +167,74 @@ pub struct RenderSettingsUniform {
     pub debug_view_mode: u32,
     pub chunk_size: u32,
     pub draw_index_mode: u32,
-    pub _pad1: u32,
+    pub time_seconds: f32,
 }
 
 impl RenderSettingsUniform {
-    pub fn new(debug_view_mode: DebugViewMode, draw_index_mode: u32) -> Self {
+    pub fn new(debug_view_mode: DebugViewMode, draw_index_mode: u32, time_seconds: f32) -> Self {
         Self {
             debug_view_mode: debug_view_mode as u32,
             chunk_size: CHUNK_SIZE_U32,
             draw_index_mode,
-            _pad1: 0,
+            time_seconds,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
+pub struct SkyUniform {
+    pub zenith_color: [f32; 4],
+    pub horizon_color: [f32; 4],
+    pub cloud_color: [f32; 4],
+    pub sun_color: [f32; 4],
+    pub sun_direction: [f32; 4],
+    pub sky_params: [f32; 4],
+    pub cloud_params: [f32; 4],
+    pub cloud_style: [f32; 4],
+}
+
+impl SkyUniform {
+    pub fn from_config(config: SkyConfig) -> Self {
+        let azimuth = config.sun_azimuth_degrees.to_radians();
+        let elevation = config.sun_elevation_degrees.to_radians();
+        let sun_direction = glam::Vec3::new(
+            elevation.cos() * azimuth.cos(),
+            elevation.sin(),
+            elevation.cos() * azimuth.sin(),
+        )
+        .normalize_or_zero();
+        let sun_disc_cos = (config.sun_disc_size_degrees.to_radians()).cos();
+
+        Self {
+            zenith_color: [
+                config.zenith_color[0],
+                config.zenith_color[1],
+                config.zenith_color[2],
+                1.0,
+            ],
+            horizon_color: [
+                config.horizon_color[0],
+                config.horizon_color[1],
+                config.horizon_color[2],
+                1.0,
+            ],
+            cloud_color: [config.cloud_color[0], config.cloud_color[1], config.cloud_color[2], 1.0],
+            sun_color: [config.sun_color[0], config.sun_color[1], config.sun_color[2], 1.0],
+            sun_direction: [sun_direction.x, sun_direction.y, sun_direction.z, 0.0],
+            sky_params: [
+                sun_disc_cos,
+                config.sun_glow_power,
+                config.sun_glow_intensity,
+                f32::from(config.enabled),
+            ],
+            cloud_params: [
+                config.cloud_scale,
+                config.cloud_height,
+                config.cloud_speed,
+                config.cloud_coverage,
+            ],
+            cloud_style: [config.cloud_softness, config.cloud_opacity, 0.0, 0.0],
         }
     }
 }
@@ -258,4 +319,32 @@ pub struct RenderStats {
     pub transparent_draws: u32,
     pub meshing_pending_chunks: u32,
     pub hiz_enabled: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RenderSettingsUniform, SkyUniform};
+    use crate::config::SkyConfig;
+
+    #[test]
+    fn render_settings_uniform_stays_16_bytes() {
+        assert_eq!(std::mem::size_of::<RenderSettingsUniform>(), 16);
+    }
+
+    #[test]
+    fn sky_uniform_stays_vec4_aligned() {
+        assert_eq!(std::mem::size_of::<SkyUniform>(), 128);
+    }
+
+    #[test]
+    fn sky_uniform_sun_direction_is_normalized() {
+        let uniform = SkyUniform::from_config(SkyConfig::default());
+        let direction = glam::Vec3::from_array([
+            uniform.sun_direction[0],
+            uniform.sun_direction[1],
+            uniform.sun_direction[2],
+        ]);
+
+        assert!((direction.length() - 1.0).abs() < 1.0e-5);
+    }
 }

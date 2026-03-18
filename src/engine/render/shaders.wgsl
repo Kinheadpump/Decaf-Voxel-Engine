@@ -16,7 +16,7 @@ struct RenderSettings {
     debug_view_mode: u32,
     chunk_size: u32,
     draw_index_mode: u32,
-    _pad1: u32,
+    time_seconds: f32,
 };
 
 struct DrawMeta {

@@ -253,7 +253,7 @@ impl AppRuntime {
         self.renderer.set_debug_overlay(debug_overlay);
         self.renderer.set_underwater_tint_active(underwater_tint_active);
 
-        if let Err(err) = self.renderer.render(&camera) {
+        if let Err(err) = self.renderer.render(&camera, self.total_time) {
             crate::log_error!("render failed: {err:#}");
             event_loop_target.exit();
             return;

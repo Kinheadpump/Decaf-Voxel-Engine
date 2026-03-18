@@ -55,6 +55,7 @@ pub struct RenderConfig {
     pub max_visible_draws: usize,
     pub camera: CameraConfig,
     pub clear_color: ClearColorConfig,
+    pub sky: SkyConfig,
     pub overlay: OverlayConfig,
     pub hiz: HiZOcclusionConfig,
 }
@@ -78,6 +79,7 @@ impl Default for RenderConfig {
             max_visible_draws: 32_768,
             camera: CameraConfig::default(),
             clear_color: ClearColorConfig::default(),
+            sky: SkyConfig::default(),
             overlay: OverlayConfig::default(),
             hiz: HiZOcclusionConfig::default(),
         }
@@ -119,6 +121,50 @@ pub struct ClearColorConfig {
 impl Default for ClearColorConfig {
     fn default() -> Self {
         Self { r: 0.45, g: 0.70, b: 0.95 }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(default)]
+pub struct SkyConfig {
+    pub enabled: bool,
+    pub zenith_color: [f32; 3],
+    pub horizon_color: [f32; 3],
+    pub cloud_color: [f32; 3],
+    pub sun_color: [f32; 3],
+    pub sun_azimuth_degrees: f32,
+    pub sun_elevation_degrees: f32,
+    pub sun_disc_size_degrees: f32,
+    pub sun_glow_power: f32,
+    pub sun_glow_intensity: f32,
+    pub cloud_scale: f32,
+    pub cloud_height: f32,
+    pub cloud_speed: f32,
+    pub cloud_coverage: f32,
+    pub cloud_softness: f32,
+    pub cloud_opacity: f32,
+}
+
+impl Default for SkyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            zenith_color: [0.10, 0.34, 0.74],
+            horizon_color: [0.76, 0.86, 0.98],
+            cloud_color: [0.98, 0.99, 1.0],
+            sun_color: [1.0, 0.93, 0.80],
+            sun_azimuth_degrees: 32.0,
+            sun_elevation_degrees: 52.0,
+            sun_disc_size_degrees: 1.4,
+            sun_glow_power: 96.0,
+            sun_glow_intensity: 0.28,
+            cloud_scale: 0.0009,
+            cloud_height: 320.0,
+            cloud_speed: 2.8,
+            cloud_coverage: 0.58,
+            cloud_softness: 0.17,
+            cloud_opacity: 0.78,
+        }
     }
 }
 

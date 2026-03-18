@@ -16,7 +16,7 @@ use crate::{
             frustum::Frustum,
             gpu_types::{
                 BaseQuadVertex, DebugOverlayInput, DebugViewMode, DrawMeta, DrawRef,
-                GpuDrawIndirect, RenderBucket, RenderSettingsUniform, RenderStats,
+                GpuDrawIndirect, RenderBucket, RenderSettingsUniform, RenderStats, SkyUniform,
                 TextGlyphInstance, TextOverlayUniform,
             },
             hiz::HiZOcclusion,
@@ -32,8 +32,8 @@ use crate::{
 use self::{
     draw::{build_draw_ref_bytes, next_face_capacity, transparent_batch_center},
     pipelines::{
-        create_overlay_pipeline, create_screen_tint_pipeline, create_voxel_pipeline,
-        create_wireframe_pipeline,
+        create_overlay_pipeline, create_screen_tint_pipeline, create_sky_pipeline,
+        create_voxel_pipeline, create_wireframe_pipeline,
     },
 };
 
@@ -54,6 +54,7 @@ pub struct Renderer {
     pub indirect_buffer: wgpu::Buffer,
     pub camera_buffer: wgpu::Buffer,
     pub render_settings_buffer: wgpu::Buffer,
+    pub _sky_uniform_buffer: wgpu::Buffer,
     pub overlay_uniform_buffer: wgpu::Buffer,
     pub overlay_instance_buffer: wgpu::Buffer,
     pub base_quad_buffer: wgpu::Buffer,
@@ -62,9 +63,11 @@ pub struct Renderer {
     pub scene_bind_group_layout: wgpu::BindGroupLayout,
     pub camera_bind_group: wgpu::BindGroup,
     pub scene_bind_group: wgpu::BindGroup,
+    pub sky_bind_group: wgpu::BindGroup,
     pub material_bind_group: wgpu::BindGroup,
     pub overlay_bind_group: wgpu::BindGroup,
 
+    pub sky_pipeline: wgpu::RenderPipeline,
     pub opaque_pipeline: wgpu::RenderPipeline,
     pub transparent_pipeline: wgpu::RenderPipeline,
     pub wireframe_pipeline: wgpu::RenderPipeline,
@@ -84,6 +87,7 @@ pub struct Renderer {
     max_visible_draws: usize,
     overlay_config: OverlayConfig,
     clear_color: ClearColorConfig,
+    sky_enabled: bool,
     opaque_draw_scratch: Vec<DrawMeta>,
     transparent_draw_scratch: Vec<(f32, DrawMeta)>,
     staged_draw_scratch: Vec<DrawMeta>,
@@ -206,8 +210,17 @@ impl Renderer {
 
         let render_settings_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("render_settings_buffer"),
-            contents: bytemuck::bytes_of(&RenderSettingsUniform::new(DebugViewMode::Shaded, 0)),
+            contents: bytemuck::bytes_of(&RenderSettingsUniform::new(
+                DebugViewMode::Shaded,
+                0,
+                0.0,
+            )),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let sky_uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("sky_uniform_buffer"),
+            contents: bytemuck::bytes_of(&SkyUniform::from_config(render_config.sky)),
+            usage: wgpu::BufferUsages::UNIFORM,
         });
 
         let overlay_uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -348,6 +361,22 @@ impl Renderer {
                 },
             ],
         });
+        let sky_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("sky_bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: Some(non_zero_u64(
+                        std::mem::size_of::<SkyUniform>() as u64,
+                        "sky uniform size",
+                    )),
+                },
+                count: None,
+            }],
+        });
 
         let overlay_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("overlay_bgl"),
@@ -400,6 +429,14 @@ impl Renderer {
                 },
             ],
         });
+        let sky_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("sky_bg"),
+            layout: &sky_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: sky_uniform_buffer.as_entire_binding(),
+            }],
+        });
 
         let material_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("material_bg"),
@@ -429,6 +466,10 @@ impl Renderer {
             label: Some("voxel_shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders.wgsl").into()),
         });
+        let sky_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("sky_shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("sky.wgsl").into()),
+        });
         let overlay_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("overlay_shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("text_overlay.wgsl").into()),
@@ -437,6 +478,11 @@ impl Renderer {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("pipeline_layout"),
             bind_group_layouts: &[&camera_bgl, &scene_bind_group_layout, &material_bgl],
+            push_constant_ranges: &[],
+        });
+        let sky_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("sky_pipeline_layout"),
+            bind_group_layouts: &[&camera_bgl, &sky_bgl],
             push_constant_ranges: &[],
         });
         let overlay_pipeline_layout =
@@ -452,6 +498,13 @@ impl Renderer {
                 push_constant_ranges: &[],
             });
 
+        let sky_pipeline = create_sky_pipeline(
+            &device,
+            &sky_pipeline_layout,
+            &sky_shader,
+            surface_config.format,
+            depth_target.format,
+        );
         let opaque_pipeline = create_voxel_pipeline(
             &device,
             &pipeline_layout,
@@ -519,6 +572,7 @@ impl Renderer {
             indirect_buffer,
             camera_buffer,
             render_settings_buffer,
+            _sky_uniform_buffer: sky_uniform_buffer,
             overlay_uniform_buffer,
             overlay_instance_buffer,
             base_quad_buffer,
@@ -526,8 +580,10 @@ impl Renderer {
             scene_bind_group_layout,
             camera_bind_group,
             scene_bind_group,
+            sky_bind_group,
             material_bind_group,
             overlay_bind_group,
+            sky_pipeline,
             opaque_pipeline,
             transparent_pipeline,
             wireframe_pipeline,
@@ -550,6 +606,7 @@ impl Renderer {
             max_visible_draws,
             overlay_config: render_config.overlay,
             clear_color: render_config.clear_color,
+            sky_enabled: render_config.sky.enabled,
             opaque_draw_scratch: Vec::new(),
             transparent_draw_scratch: Vec::new(),
             staged_draw_scratch: Vec::new(),
@@ -623,7 +680,7 @@ impl Renderer {
         }
     }
 
-    pub fn render(&mut self, camera: &Camera) -> anyhow::Result<()> {
+    pub fn render(&mut self, camera: &Camera, time_seconds: f32) -> anyhow::Result<()> {
         let _span = crate::profile_span!("renderer::render");
 
         let mut opaque_draws = std::mem::take(&mut self.opaque_draw_scratch);
@@ -654,6 +711,7 @@ impl Renderer {
                     self.use_multi_draw_indirect
                         && self.debug_view_mode != DebugViewMode::Wireframe,
                 ),
+                time_seconds,
             )),
         );
 
@@ -819,6 +877,14 @@ impl Renderer {
                 occlusion_query_set: None,
                 timestamp_writes: None,
             });
+
+            if self.sky_enabled && self.debug_view_mode == DebugViewMode::Shaded {
+                pass.set_pipeline(&self.sky_pipeline);
+                pass.set_bind_group(0, &self.camera_bind_group, &[]);
+                pass.set_bind_group(1, &self.sky_bind_group, &[]);
+                pass.set_vertex_buffer(0, self.base_quad_buffer.slice(..));
+                pass.draw(0..4, 0..1);
+            }
 
             pass.set_bind_group(0, &self.camera_bind_group, &[]);
             pass.set_bind_group(2, &self.material_bind_group, &[]);

@@ -31,6 +31,24 @@ r = 0.45
 g = 0.70
 b = 0.95
 
+[render.sky]
+enabled = true
+zenith_color = [0.10, 0.34, 0.74]
+horizon_color = [0.76, 0.86, 0.98]
+cloud_color = [0.98, 0.99, 1.0]
+sun_color = [1.0, 0.93, 0.80]
+sun_azimuth_degrees = 32.0
+sun_elevation_degrees = 52.0
+sun_disc_size_degrees = 1.4
+sun_glow_power = 96.0
+sun_glow_intensity = 0.28
+cloud_scale = 0.0009
+cloud_height = 320.0
+cloud_speed = 2.8
+cloud_coverage = 0.58
+cloud_softness = 0.17
+cloud_opacity = 0.78
+
 [render.overlay]
 max_glyphs = 768
 glyph_width = 12.0
