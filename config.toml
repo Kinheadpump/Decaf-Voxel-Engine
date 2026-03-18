@@ -1,9 +1,70 @@
 [debug]
-enable_profiler = false
+enable_profiler = true
+
+[window]
+width = 1280
+height = 720
 
 [render]
-vsync = true
-render_radius = 8
+render_radius_xz = 4
+render_radius_y = 1
+stream_generation_budget = 16
+enable_hiz_occlusion = false
+initial_face_capacity = 4000000
+max_visible_draws = 32768
+
+[render.camera]
+fov_y_degrees = 70.0
+near_plane = 0.1
+
+[render.clear_color]
+r = 0.45
+g = 0.70
+b = 0.95
+
+[render.overlay]
+max_glyphs = 256
+glyph_width = 12.0
+glyph_height = 15.0
+padding_x = 8.0
+padding_y = 8.0
+glyph_advance_x = 13.0
+line_advance_y = 18.0
+
+[render.hiz]
+max_base_dimension = 256
+readback_slots = 3
+max_passes = 16
+max_camera_reuse_distance = 8.0
+min_camera_reuse_forward_dot = 0.97
+near_chunk_skip_distance = 48.0
+occlusion_depth_bias = 0.0001
+
+[player]
+spawn_x = 0.0
+spawn_y = 10.0
+spawn_z = 0.0
+reach_distance = 6.0
+mouse_sensitivity = 0.0022
+eye_height = 1.62
+radius = 0.3
+height = 1.8
+double_tap_window = 0.25
+collision_steps = 3
+walk_speed = 5.0
+walk_sprint_multiplier = 1.8
+walk_accel = 45.0
+air_accel = 10.0
+ground_friction = 14.0
+air_friction = 1.0
+jump_speed = 8.5
+gravity = 24.0
+fly_speed = 7.0
+fly_sprint_multiplier = 2.5
+fly_accel = 24.0
+fly_friction = 10.0
 
 [world]
 seed = 12345
+surface_level = 0
+soil_depth = 4
