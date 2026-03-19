@@ -17,15 +17,27 @@ pub struct DirtyChunkEntry {
     pub region: ChunkMeshDirtyRegion,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PersistentBlockEdit {
+    local: UVec3,
+    block_id: BlockId,
+}
+
 pub struct World {
     pub chunks: AHashMap<ChunkCoord, Chunk>,
     dirty_regions: AHashMap<ChunkCoord, ChunkMeshDirtyRegion>,
     dirty_queue: Vec<ChunkCoord>,
+    persistent_edits: AHashMap<ChunkCoord, Vec<PersistentBlockEdit>>,
 }
 
 impl World {
     pub fn new() -> Self {
-        Self { chunks: AHashMap::new(), dirty_regions: AHashMap::new(), dirty_queue: Vec::new() }
+        Self {
+            chunks: AHashMap::new(),
+            dirty_regions: AHashMap::new(),
+            dirty_queue: Vec::new(),
+            persistent_edits: AHashMap::new(),
+        }
     }
 
     pub fn mark_dirty(&mut self, coord: ChunkCoord) {
@@ -47,6 +59,7 @@ impl World {
 
     pub fn insert_chunk(&mut self, coord: ChunkCoord, chunk: Chunk) {
         self.chunks.insert(coord, chunk);
+        self.apply_persistent_edits(coord);
         self.mark_dirty(coord);
         self.mark_adjacent_chunk_borders_dirty(coord);
     }
@@ -67,6 +80,18 @@ impl World {
         self.set_voxel_world(p, Voxel::from_block_id(block_id))
     }
 
+    pub fn load_persistent_edit_world(&mut self, p: IVec3, block_id: BlockId) {
+        let coord = ChunkCoord::from_world_voxel(p);
+        self.record_persistent_edit(coord, coord.local_voxel(p), block_id);
+    }
+
+    pub fn iter_persistent_edits(&self) -> impl Iterator<Item = (IVec3, BlockId)> + '_ {
+        self.persistent_edits.iter().flat_map(|(coord, edits)| {
+            let origin = coord.world_origin();
+            edits.iter().map(move |edit| (origin + edit.local.as_ivec3(), edit.block_id))
+        })
+    }
+
     fn set_voxel_world(&mut self, p: IVec3, voxel: Voxel) -> bool {
         let coord = ChunkCoord::from_world_voxel(p);
         let local = coord.local_voxel(p);
@@ -84,6 +109,7 @@ impl World {
             chunk.set(local.x as usize, local.y as usize, local.z as usize, voxel);
         }
 
+        self.record_persistent_edit(coord, local, voxel.block_id());
         self.mark_dirty_region(coord, ChunkMeshDirtyRegion::from_local_voxel(local));
         self.mark_border_neighbors_dirty(coord, local);
         true
@@ -155,11 +181,39 @@ impl World {
             }
         }
     }
+
+    fn record_persistent_edit(&mut self, coord: ChunkCoord, local: UVec3, block_id: BlockId) {
+        let edits = self.persistent_edits.entry(coord).or_default();
+        if let Some(existing) = edits.iter_mut().find(|edit| edit.local == local) {
+            existing.block_id = block_id;
+        } else {
+            edits.push(PersistentBlockEdit { local, block_id });
+        }
+    }
+
+    fn apply_persistent_edits(&mut self, coord: ChunkCoord) {
+        let Some(edits) = self.persistent_edits.get(&coord) else {
+            return;
+        };
+        let Some(chunk) = self.chunks.get_mut(&coord) else {
+            return;
+        };
+
+        for edit in edits {
+            chunk.set(
+                edit.local.x as usize,
+                edit.local.y as usize,
+                edit.local.z as usize,
+                Voxel::from_block_id(edit.block_id),
+            );
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::world::voxel::Voxel;
 
     #[test]
     fn editing_border_voxel_marks_neighbor_chunk_dirty() {
@@ -249,5 +303,34 @@ mod tests {
         assert_eq!(dirty.len(), 1);
         assert_eq!(dirty[0].coord, center);
         assert!(dirty[0].region.touches(FaceDir::PosX, CHUNK_SIZE - 1));
+    }
+
+    #[test]
+    fn persisted_edits_are_reapplied_when_chunk_reloads() {
+        let mut world = World::new();
+        let coord = ChunkCoord(IVec3::ZERO);
+        let edited_voxel = IVec3::new(3, 4, 5);
+
+        world.insert_chunk(coord, Chunk::new());
+        let _ = world.take_dirty();
+        assert!(world.set_block_world(edited_voxel, BlockId(7)));
+
+        assert!(world.remove_chunk(coord).is_some());
+        world.insert_chunk(coord, Chunk::new());
+
+        let chunk = world.chunks.get(&coord).expect("reloaded chunk should exist");
+        assert_eq!(chunk.get(3, 4, 5), Voxel::from_block_id(BlockId(7)));
+    }
+
+    #[test]
+    fn loaded_persistent_edits_apply_to_future_chunk_inserts() {
+        let mut world = World::new();
+        let coord = ChunkCoord(IVec3::ZERO);
+
+        world.load_persistent_edit_world(IVec3::new(1, 2, 3), BlockId(9));
+        world.insert_chunk(coord, Chunk::new());
+
+        let chunk = world.chunks.get(&coord).expect("chunk should exist");
+        assert_eq!(chunk.get(1, 2, 3), Voxel::from_block_id(BlockId(9)));
     }
 }

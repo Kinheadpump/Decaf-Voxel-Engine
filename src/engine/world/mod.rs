@@ -6,5 +6,6 @@ pub mod coord;
 pub mod generation;
 pub mod generator;
 pub mod mesher;
+pub mod persistence;
 pub mod storage;
 pub mod voxel;

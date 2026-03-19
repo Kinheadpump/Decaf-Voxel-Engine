@@ -36,6 +36,10 @@ impl BlockRegistry {
         self.get_id(name).unwrap_or_else(|| panic!("block '{name}' was not registered"))
     }
 
+    pub fn get(&self, id: BlockId) -> Option<&BlockDefinition> {
+        self.blocks.get(id.0 as usize)
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = &BlockDefinition> {
         self.blocks.iter()
     }

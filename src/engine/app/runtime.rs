@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 use winit::{
     event::{DeviceEvent, MouseButton, WindowEvent},
@@ -24,8 +24,12 @@ use crate::{
         world::{
             accessor::VoxelAccessor,
             biome::BiomeTable,
-            block::{create_default_block_registry, id::BlockId, resolved::ResolvedBlockRegistry},
+            block::{
+                create_default_block_registry, id::BlockId, registry::BlockRegistry,
+                resolved::ResolvedBlockRegistry,
+            },
             generator::{ChunkGenerator, StagedGenerator},
+            persistence,
             storage::World,
         },
     },
@@ -50,6 +54,8 @@ pub(super) struct AppRuntime {
     renderer: Renderer,
     player: Player,
     world: World,
+    block_registry: BlockRegistry,
+    save_file: PathBuf,
     input: InputState,
     total_time: f32,
     fps_counter: FpsCounter,
@@ -63,6 +69,7 @@ impl AppRuntime {
         let render_config = config.render;
         let player_config = config.player;
         let world_config = config.world;
+        let save_file = persistence::save_path(&world_config.save_file);
 
         let render_radius_xz = render_config.render_radius_xz.max(0);
         let render_radius_y = render_config.render_radius_y.max(0);
@@ -107,6 +114,17 @@ impl AppRuntime {
         player.position = spawn_position;
         let initial_focus = meshing_focus_from_player(&player);
         let mut world = World::new();
+        let persistent_edits = persistence::load_block_edits(&save_file, &block_registry)?;
+        for (position, block_id) in persistent_edits.iter().copied() {
+            world.load_persistent_edit_world(position, block_id);
+        }
+        if !persistent_edits.is_empty() {
+            crate::log_info!(
+                "Loaded {} persisted world edits from {}",
+                persistent_edits.len(),
+                save_file.display()
+            );
+        }
 
         streamer.finish_generation(
             &mut world,
@@ -138,6 +156,8 @@ impl AppRuntime {
             renderer,
             player,
             world,
+            block_registry,
+            save_file,
             input: InputState::new(),
             total_time: 0.0,
             fps_counter: FpsCounter::new(),
@@ -307,6 +327,7 @@ impl AppRuntime {
 
         let interaction_origin = self.player.eye_position();
         let interaction_direction = self.player.forward_3d();
+        let mut world_changed = false;
 
         if self.input.mouse_pressed(MouseButton::Left)
             && remove_block_in_front(
@@ -318,6 +339,7 @@ impl AppRuntime {
             )
         {
             crate::log_debug!("Removed block");
+            world_changed = true;
         }
 
         if self.input.mouse_pressed(MouseButton::Right)
@@ -332,6 +354,11 @@ impl AppRuntime {
             )
         {
             crate::log_debug!("Placed stone block");
+            world_changed = true;
+        }
+
+        if world_changed && let Err(err) = self.persist_world_edits() {
+            crate::log_warn!("failed to save world edits to {}: {err:#}", self.save_file.display());
         }
     }
 
@@ -358,6 +385,10 @@ impl AppRuntime {
         let eye_voxel = self.player.eye_position().floor().as_ivec3();
         VoxelAccessor { world: &self.world }.get_world_voxel(eye_voxel).block_id()
             == self.water_block_id
+    }
+
+    fn persist_world_edits(&self) -> anyhow::Result<()> {
+        persistence::save_block_edits(&self.save_file, &self.world, &self.block_registry)
     }
 }
 
