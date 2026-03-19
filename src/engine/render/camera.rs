@@ -39,6 +39,14 @@ impl Camera {
         self.proj() * self.view()
     }
 
+    pub fn projection_matches(&self, other: &Self) -> bool {
+        const EPSILON: f32 = 1.0e-6;
+
+        (self.fov_y_radians - other.fov_y_radians).abs() <= EPSILON
+            && (self.aspect - other.aspect).abs() <= EPSILON
+            && (self.near_plane - other.near_plane).abs() <= EPSILON
+    }
+
     pub fn build_uniform(&self) -> CameraUniform {
         let view = self.view();
         let proj = self.proj();
@@ -125,5 +133,19 @@ mod tests {
 
         assert!(ndc_z > 0.0);
         assert!(ndc_z < 0.001, "expected distant depth near zero, got {ndc_z}");
+    }
+
+    #[test]
+    fn projection_match_detects_zoom_fov_changes() {
+        let base_camera =
+            Camera::from_config(Vec3::ZERO, -Vec3::Z, 16.0 / 9.0, &CameraConfig::default());
+        let zoom_camera = Camera::from_config(
+            Vec3::ZERO,
+            -Vec3::Z,
+            16.0 / 9.0,
+            &CameraConfig { fov_y_degrees: 30.0, ..CameraConfig::default() },
+        );
+
+        assert!(!zoom_camera.projection_matches(&base_camera));
     }
 }

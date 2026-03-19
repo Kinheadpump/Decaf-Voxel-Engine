@@ -1,20 +1,29 @@
 [debug]
-enable_profiler = true
+enable_profiler = false
 
 [window]
 width = 1280
 height = 720
 
 [render]
-render_radius_xz = 4
-render_radius_y = 1
+render_radius_xz = 12
+render_radius_y = 4
+startup_preload_radius_xz = 0
+startup_preload_radius_y = 0
 stream_generation_budget = 16
+stream_completed_chunk_budget = 8
+stream_max_inflight_generations = 64
+generation_worker_count = 0
+meshing_worker_count = 0
+meshing_enqueue_budget = 8
+mesh_upload_budget = 6
 enable_hiz_occlusion = false
 initial_face_capacity = 4000000
 max_visible_draws = 32768
 
 [render.camera]
 fov_y_degrees = 70.0
+zoom_fov_y_degrees = 10.0
 near_plane = 0.1
 
 [render.clear_color]
@@ -22,8 +31,26 @@ r = 0.45
 g = 0.70
 b = 0.95
 
+[render.sky]
+enabled = true
+zenith_color = [0.10, 0.34, 0.74]
+horizon_color = [0.76, 0.86, 0.98]
+cloud_color = [0.98, 0.99, 1.0]
+sun_color = [1.0, 0.93, 0.80]
+sun_azimuth_degrees = 32.0
+sun_elevation_degrees = 52.0
+sun_disc_size_degrees = 1.4
+sun_glow_power = 96.0
+sun_glow_intensity = 0.28
+cloud_scale = 0.0009
+cloud_height = 320.0
+cloud_speed = 2.8
+cloud_coverage = 0.58
+cloud_softness = 0.17
+cloud_opacity = 0.78
+
 [render.overlay]
-max_glyphs = 256
+max_glyphs = 768
 glyph_width = 12.0
 glyph_height = 15.0
 padding_x = 8.0
@@ -41,11 +68,9 @@ near_chunk_skip_distance = 48.0
 occlusion_depth_bias = 0.0001
 
 [player]
-spawn_x = 0.0
-spawn_y = 10.0
-spawn_z = 0.0
 reach_distance = 6.0
-mouse_sensitivity = 0.0022
+mouse_sensitivity = 0.0008
+zoom_mouse_sensitivity_multiplier = 0.3
 eye_height = 1.62
 radius = 0.3
 height = 1.8
@@ -65,6 +90,86 @@ fly_accel = 24.0
 fly_friction = 10.0
 
 [world]
-seed = 12345
-surface_level = 0
-soil_depth = 4
+seed = 3141592653589793
+biomes_file = "biomes.toml"
+
+[world.terrain]
+sea_level = 0
+dirt_depth = 3
+continentalness_contrast = 1.22
+detail_amplitude = 48.0
+biome_blend = 0.18
+climate_contrast = 1.22
+mountain_start_roughness = 1.18
+mountain_peak_boost = 152.0
+mountain_peak_sharpness = 1.72
+
+[world.terrain.continentalness]
+scale = 0.00175
+octaves = 3
+persistence = 0.52
+lacunarity = 2.0
+
+[world.terrain.detail]
+scale = 0.0072
+octaves = 5
+persistence = 0.50
+lacunarity = 2.0
+
+[world.terrain.density_3d]
+scale = 0.018
+octaves = 4
+persistence = 0.58
+lacunarity = 2.0
+weight = 12.0
+
+[world.terrain.rivers]
+scale = 0.0026
+octaves = 2
+persistence = 0.5
+lacunarity = 2.0
+valley_width = 0.110
+depth = 28.0
+bank_sharpness = 1.35
+
+[world.terrain.temperature]
+scale = 0.0034
+octaves = 3
+persistence = 0.5
+lacunarity = 2.0
+
+[world.terrain.humidity]
+scale = 0.0030
+octaves = 3
+persistence = 0.52
+lacunarity = 2.0
+
+[world.terrain.continental_regions.deep_ocean]
+max_value = 0.14
+base_height = -56.0
+roughness = 0.10
+
+[world.terrain.continental_regions.ocean]
+max_value = 0.28
+base_height = -32.0
+roughness = 0.18
+
+[world.terrain.continental_regions.coast]
+max_value = 0.40
+base_height = -8.0
+roughness = 0.34
+
+[world.terrain.continental_regions.plains]
+max_value = 0.60
+base_height = 16.0
+roughness = 0.78
+
+[world.terrain.continental_regions.highlands]
+max_value = 0.79
+base_height = 46.0
+roughness = 1.70
+
+[world.terrain.continental_regions.mountains]
+max_value = 1.0
+base_height = 132.0
+roughness = 3.10

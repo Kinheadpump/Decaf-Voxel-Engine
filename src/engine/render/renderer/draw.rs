@@ -15,25 +15,6 @@ pub(super) fn transparent_batch_center(origin: glam::IVec3, face_dir: u32) -> gl
     }
 }
 
-pub(super) fn chunk_face_can_face_camera(
-    camera_position: glam::Vec3,
-    chunk_min: glam::Vec3,
-    chunk_max: glam::Vec3,
-    face_dir: u32,
-) -> bool {
-    const FACE_VISIBILITY_EPSILON: f32 = 1.0e-4;
-    const FACE_OFFSET: f32 = 1.0;
-
-    match face_dir {
-        0 => camera_position.x > chunk_min.x + FACE_OFFSET + FACE_VISIBILITY_EPSILON,
-        1 => camera_position.x < chunk_max.x - FACE_OFFSET - FACE_VISIBILITY_EPSILON,
-        2 => camera_position.y > chunk_min.y + FACE_OFFSET + FACE_VISIBILITY_EPSILON,
-        3 => camera_position.y < chunk_max.y - FACE_OFFSET - FACE_VISIBILITY_EPSILON,
-        4 => camera_position.z > chunk_min.z + FACE_OFFSET + FACE_VISIBILITY_EPSILON,
-        _ => camera_position.z < chunk_max.z - FACE_OFFSET - FACE_VISIBILITY_EPSILON,
-    }
-}
-
 pub(super) fn build_draw_ref_bytes(max_draws: usize, draw_ref_stride: usize) -> Vec<u8> {
     let mut draw_ref_bytes = vec![0u8; max_draws * draw_ref_stride];
 
@@ -67,7 +48,7 @@ pub(super) fn next_face_capacity(current_capacity: u32, required_faces: u32) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::{build_draw_ref_bytes, chunk_face_can_face_camera, next_face_capacity};
+    use super::{build_draw_ref_bytes, next_face_capacity};
     use crate::engine::render::gpu_types::DrawRef;
 
     #[test]
@@ -83,37 +64,6 @@ mod tests {
     #[test]
     fn zero_capacity_grows_to_requirement() {
         assert_eq!(next_face_capacity(0, 300), 300);
-    }
-
-    #[test]
-    fn directional_pruning_skips_backside_batches() {
-        let chunk_min = glam::Vec3::ZERO;
-        let chunk_max = glam::Vec3::splat(32.0);
-
-        assert!(!chunk_face_can_face_camera(
-            glam::Vec3::new(-10.0, 10.0, 10.0),
-            chunk_min,
-            chunk_max,
-            0,
-        ));
-        assert!(chunk_face_can_face_camera(
-            glam::Vec3::new(-10.0, 10.0, 10.0),
-            chunk_min,
-            chunk_max,
-            1,
-        ));
-    }
-
-    #[test]
-    fn directional_pruning_keeps_both_sides_when_camera_is_inside_chunk() {
-        let chunk_min = glam::Vec3::ZERO;
-        let chunk_max = glam::Vec3::splat(32.0);
-        let camera = glam::Vec3::splat(16.0);
-
-        assert!(chunk_face_can_face_camera(camera, chunk_min, chunk_max, 0));
-        assert!(chunk_face_can_face_camera(camera, chunk_min, chunk_max, 1));
-        assert!(chunk_face_can_face_camera(camera, chunk_min, chunk_max, 2));
-        assert!(chunk_face_can_face_camera(camera, chunk_min, chunk_max, 3));
     }
 
     #[test]

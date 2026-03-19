@@ -9,10 +9,15 @@ use crate::engine::{
         block::{
             id::BlockId,
             resolved::{ResolvedBlock, ResolvedBlockRegistry},
+            tint::BiomeTint,
         },
         chunk::Chunk,
         coord::ChunkCoord,
     },
+};
+
+use crate::engine::render::gpu_types::{
+    DEFAULT_FACE_TINT, FACE_TINT_MODE_GRASS, FACE_TINT_MODE_MULTIPLY, pack_face_tint,
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -24,6 +29,12 @@ pub struct ChunkMeshDirtyRegion {
 impl ChunkMeshDirtyRegion {
     pub fn full() -> Self {
         Self { full: true, slice_masks: [0; 6] }
+    }
+
+    pub fn from_face_slice(dir: FaceDir, depth: usize) -> Self {
+        let mut region = Self::default();
+        region.mark_slice(dir, depth);
+        region
     }
 
     pub fn from_local_voxel(local: UVec3) -> Self {
@@ -127,6 +138,7 @@ struct MaskCell {
     block_id: BlockId,
     texture_id: u16,
     bucket: RenderBucket,
+    tint: u32,
 }
 
 pub fn build_chunk_mesh_slices(
@@ -220,6 +232,7 @@ fn build_direction_slice(
                     } else {
                         RenderBucket::Opaque
                     },
+                    tint: resolve_face_tint(chunk, block, dir, local.x as usize, local.z as usize),
                 }
             } else {
                 MaskCell::default()
@@ -251,6 +264,7 @@ fn build_direction_slice(
                     || c.block_id != block_id
                     || c.texture_id != texture_id
                     || c.bucket != bucket
+                    || c.tint != cell.tint
                 {
                     break;
                 }
@@ -266,6 +280,7 @@ fn build_direction_slice(
                         || c.block_id != block_id
                         || c.texture_id != texture_id
                         || c.bucket != bucket
+                        || c.tint != cell.tint
                     {
                         break 'outer;
                     }
@@ -288,6 +303,7 @@ fn build_direction_slice(
                 texture_id as u32,
                 (width as u32) - 1,
                 (height as u32) - 1,
+                cell.tint,
             );
 
             out[bucket as usize].push(packed);
@@ -326,6 +342,16 @@ fn face_visible_between(
     true
 }
 
+fn resolve_face_tint(chunk: &Chunk, block: ResolvedBlock, dir: FaceDir, x: usize, z: usize) -> u32 {
+    let tint = chunk.biome_tints(x, z);
+
+    match block.tints.get(dir) {
+        BiomeTint::None => DEFAULT_FACE_TINT,
+        BiomeTint::Grass => pack_face_tint(FACE_TINT_MODE_GRASS, tint.grass),
+        BiomeTint::Foliage => pack_face_tint(FACE_TINT_MODE_MULTIPLY, tint.foliage),
+    }
+}
+
 fn face_local_xyz(dir: FaceDir, depth: usize, u: usize, v: usize) -> IVec3 {
     match dir {
         FaceDir::PosX => IVec3::new(depth as i32, u as i32, v as i32),
@@ -340,7 +366,11 @@ fn face_local_xyz(dir: FaceDir, depth: usize, u: usize, v: usize) -> IVec3 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::world::block::{flags::BlockFlags, resolved::ResolvedFaceTextures};
+    use crate::engine::world::block::{
+        flags::BlockFlags,
+        resolved::ResolvedFaceTextures,
+        tint::{BiomeTint, ResolvedFaceTints},
+    };
 
     fn resolved(id: u16, flags: BlockFlags) -> ResolvedBlock {
         ResolvedBlock {
@@ -354,6 +384,7 @@ mod tests {
                 pos_z: 0,
                 neg_z: 0,
             },
+            tints: ResolvedFaceTints::default(),
         }
     }
 
@@ -405,5 +436,49 @@ mod tests {
         assert!(region.touches(FaceDir::NegX, 31));
         assert!(region.touches(FaceDir::PosX, 30));
         assert!(!region.is_full());
+    }
+
+    #[test]
+    fn face_tint_uses_chunk_biome_colors() {
+        let mut chunk = Chunk::new();
+        chunk.set_biome_tints(
+            3,
+            5,
+            crate::engine::world::chunk::ColumnBiomeTints {
+                grass: [101, 152, 77],
+                foliage: [72, 118, 54],
+            },
+        );
+
+        let block = ResolvedBlock {
+            id: BlockId(7),
+            flags: BlockFlags::SOLID | BlockFlags::OPAQUE,
+            textures: ResolvedFaceTextures {
+                pos_x: 0,
+                neg_x: 0,
+                pos_y: 0,
+                neg_y: 0,
+                pos_z: 0,
+                neg_z: 0,
+            },
+            tints: ResolvedFaceTints {
+                pos_x: BiomeTint::Grass,
+                neg_x: BiomeTint::Foliage,
+                pos_y: BiomeTint::None,
+                neg_y: BiomeTint::None,
+                pos_z: BiomeTint::None,
+                neg_z: BiomeTint::None,
+            },
+        };
+
+        assert_eq!(
+            resolve_face_tint(&chunk, block, FaceDir::PosX, 3, 5),
+            pack_face_tint(FACE_TINT_MODE_GRASS, [101, 152, 77])
+        );
+        assert_eq!(
+            resolve_face_tint(&chunk, block, FaceDir::NegX, 3, 5),
+            pack_face_tint(FACE_TINT_MODE_MULTIPLY, [72, 118, 54])
+        );
+        assert_eq!(resolve_face_tint(&chunk, block, FaceDir::PosY, 3, 5), DEFAULT_FACE_TINT);
     }
 }

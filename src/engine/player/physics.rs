@@ -8,7 +8,7 @@ use crate::{
             math::{IVec3, Vec3},
         },
         input::InputState,
-        player::controller::{MovementMode, Player},
+        player::state::{MovementMode, Player},
         world::{accessor::VoxelAccessor, block::resolved::ResolvedBlockRegistry, storage::World},
     },
 };
@@ -20,11 +20,12 @@ pub fn update_player(
     resolved_blocks: &ResolvedBlockRegistry,
     total_time: f32,
     config: &PlayerConfig,
+    zoom_active: bool,
 ) {
     let _span = crate::profile_span!("player::update");
     let accessor = VoxelAccessor { world };
 
-    update_look(player, input, config);
+    update_look(player, input, config, zoom_active);
     update_mode_toggles(player, input, total_time, config);
 
     match player.movement_mode {
@@ -33,11 +34,12 @@ pub fn update_player(
     }
 }
 
-fn update_look(player: &mut Player, input: &InputState, config: &PlayerConfig) {
+fn update_look(player: &mut Player, input: &InputState, config: &PlayerConfig, zoom_active: bool) {
     let (dx, dy) = input.mouse_delta;
+    let look_sensitivity = config.look_sensitivity(zoom_active);
 
-    player.yaw += dx * config.mouse_sensitivity;
-    player.pitch -= dy * config.mouse_sensitivity;
+    player.yaw += dx * look_sensitivity;
+    player.pitch -= dy * look_sensitivity;
 
     let max_pitch = std::f32::consts::FRAC_PI_2 - 0.001;
     player.pitch = player.pitch.clamp(-max_pitch, max_pitch);
@@ -319,13 +321,12 @@ mod tests {
     use super::flying_move_direction;
     use crate::{
         config::PlayerConfig,
-        engine::{input::InputState, player::controller::Player},
+        engine::{input::InputState, player::state::Player},
     };
     use winit::keyboard::KeyCode;
 
     fn test_player() -> Player {
-        let config = PlayerConfig { spawn_y: 0.0, ..PlayerConfig::default() };
-        Player::from_config(&config)
+        Player::from_config(&PlayerConfig::default())
     }
 
     #[test]

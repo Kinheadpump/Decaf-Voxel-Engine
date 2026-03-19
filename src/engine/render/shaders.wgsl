@@ -16,7 +16,7 @@ struct RenderSettings {
     debug_view_mode: u32,
     chunk_size: u32,
     draw_index_mode: u32,
-    _pad1: u32,
+    time_seconds: f32,
 };
 
 struct DrawMeta {
@@ -36,6 +36,7 @@ struct DrawRef {
 
 struct PackedFace {
     value: u32,
+    tint: u32,
 };
 
 @group(0) @binding(0)
@@ -72,7 +73,14 @@ struct VsOut {
     @location(2) normal: vec3<f32>,
     @interpolate(flat)
     @location(3) draw_meta_index: u32,
+    @interpolate(flat)
+    @location(4) tint_packed: u32,
 };
+
+const FACE_TINT_MODE_NONE: u32 = 0u;
+const FACE_TINT_MODE_GRASS: u32 = 1u;
+const FACE_TINT_MODE_MULTIPLY: u32 = 2u;
+const GRASS_TOP_REFERENCE_BRIGHTNESS: f32 = 147.43 / 255.0;
 
 fn chunk_volume() -> u32 {
     return render_settings.chunk_size * render_settings.chunk_size * render_settings.chunk_size;
@@ -174,19 +182,64 @@ fn chunk_coord_color(draw_meta: DrawMeta) -> vec3<f32> {
     return hash_color_u32(seed);
 }
 
+fn unpack_tint_rgb(tint: u32) -> vec3<f32> {
+    return vec3<f32>(
+        f32(tint & 0xffu) / 255.0,
+        f32((tint >> 8u) & 0xffu) / 255.0,
+        f32((tint >> 16u) & 0xffu) / 255.0,
+    );
+}
+
+fn tint_mode(tint: u32) -> u32 {
+    return (tint >> 24u) & 0xffu;
+}
+
+fn apply_face_tint(base_color: vec3<f32>, tint_packed: u32) -> vec3<f32> {
+    let mode = tint_mode(tint_packed);
+    if mode == FACE_TINT_MODE_NONE {
+        return base_color;
+    }
+
+    let tint = unpack_tint_rgb(tint_packed);
+    if mode == FACE_TINT_MODE_GRASS {
+        let brightness = max(base_color.r, 0.0);
+        let shading = brightness / GRASS_TOP_REFERENCE_BRIGHTNESS;
+        return tint * shading;
+    }
+
+    if mode == FACE_TINT_MODE_MULTIPLY {
+        return base_color * tint;
+    }
+
+    return base_color;
+}
+
+fn face_shade(normal: vec3<f32>) -> f32 {
+    if normal.y > 0.5 {
+        return 1.0;
+    }
+
+    if normal.y < -0.5 {
+        return 0.72;
+    }
+
+    return 0.86;
+}
+
 @vertex
 fn vs_main(in: VsIn) -> VsOut {
     let draw_meta_index = active_draw_meta_index(in.instance_index);
     let draw_meta = draw_metas[draw_meta_index];
     let local_instance_index = local_face_instance_index(in.instance_index);
-    let face = faces[draw_meta.face_offset + local_instance_index].value;
+    let face = faces[draw_meta.face_offset + local_instance_index];
+    let face_value = face.value;
 
-    let x = f32((face >> 0u) & 0x1Fu);
-    let y = f32((face >> 5u) & 0x1Fu);
-    let z = f32((face >> 10u) & 0x1Fu);
-    let tex_id = (face >> 15u) & 0x7Fu;
-    let w = f32(((face >> 22u) & 0x1Fu) + 1u);
-    let h = f32(((face >> 27u) & 0x1Fu) + 1u);
+    let x = f32((face_value >> 0u) & 0x1Fu);
+    let y = f32((face_value >> 5u) & 0x1Fu);
+    let z = f32((face_value >> 10u) & 0x1Fu);
+    let tex_id = (face_value >> 15u) & 0x7Fu;
+    let w = f32(((face_value >> 22u) & 0x1Fu) + 1u);
+    let h = f32(((face_value >> 27u) & 0x1Fu) + 1u);
 
     let u_axis = face_u_axis(draw_meta.face_dir);
     let v_axis = face_v_axis(draw_meta.face_dir);
@@ -213,6 +266,7 @@ fn vs_main(in: VsIn) -> VsOut {
     out.tex_id = tex_id;
     out.normal = normal;
     out.draw_meta_index = draw_meta_index;
+    out.tint_packed = face.tint;
     return out;
 }
 
@@ -227,9 +281,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         default {}
     }
 
-    let light_dir = normalize(vec3<f32>(0.7, 1.0, 0.5));
-    let diffuse = max(dot(in.normal, light_dir), 0.18);
     let sample_uv = vec2<f32>(fract(in.tex_uv.x), fract(1.0 - in.tex_uv.y));
     let color = textureSample(tex_array, tex_sampler, sample_uv, i32(in.tex_id));
-    return vec4<f32>(color.rgb * diffuse, color.a);
+    return vec4<f32>(apply_face_tint(color.rgb, in.tint_packed) * face_shade(in.normal), color.a);
 }

@@ -9,6 +9,7 @@
 !/config.toml
 !/rustfmt.toml
 !/.clippy.toml
+!/biomes.toml
 !/assets
 
 !/.cargo

@@ -251,14 +251,7 @@ impl HiZOcclusion {
             return false;
         };
 
-        if (camera.position - previous_camera.position).length_squared()
-            > self.settings.max_camera_reuse_distance * self.settings.max_camera_reuse_distance
-        {
-            return false;
-        }
-
-        if camera.forward.dot(previous_camera.forward) < self.settings.min_camera_reuse_forward_dot
-        {
+        if !can_reuse_previous_camera(&self.settings, camera, &previous_camera) {
             return false;
         }
 
@@ -762,9 +755,28 @@ fn distance_sq_to_aabb(point: Vec3, min: Vec3, max: Vec3) -> f32 {
     (point - clamped).length_squared()
 }
 
+fn can_reuse_previous_camera(
+    settings: &HiZOcclusionConfig,
+    camera: &Camera,
+    previous_camera: &Camera,
+) -> bool {
+    if !camera.projection_matches(previous_camera) {
+        return false;
+    }
+
+    if (camera.position - previous_camera.position).length_squared()
+        > settings.max_camera_reuse_distance * settings.max_camera_reuse_distance
+    {
+        return false;
+    }
+
+    camera.forward.dot(previous_camera.forward) >= settings.min_camera_reuse_forward_dot
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::CameraConfig;
 
     #[test]
     fn surface_size_is_downscaled_for_hiz() {
@@ -788,5 +800,20 @@ mod tests {
 
         assert!((pyramid.min_depth(0, 0, 0, 2, 2) - 0.8).abs() < 1.0e-6);
         assert!((pyramid.min_depth(0, 2, 0, 4, 4) - 0.6).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn camera_reuse_rejects_zoom_projection_changes() {
+        let settings = HiZOcclusionConfig::default();
+        let previous_camera =
+            Camera::from_config(Vec3::ZERO, -Vec3::Z, 16.0 / 9.0, &CameraConfig::default());
+        let zoom_camera = Camera::from_config(
+            Vec3::ZERO,
+            -Vec3::Z,
+            16.0 / 9.0,
+            &CameraConfig { fov_y_degrees: 30.0, ..CameraConfig::default() },
+        );
+
+        assert!(!can_reuse_previous_camera(&settings, &zoom_camera, &previous_camera));
     }
 }

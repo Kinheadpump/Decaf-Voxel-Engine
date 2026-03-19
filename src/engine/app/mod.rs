@@ -1,0 +1,46 @@
+mod fps;
+mod runtime;
+mod spawn;
+mod streaming;
+
+use std::sync::Arc;
+
+use winit::{dpi::PhysicalSize, event::Event, event_loop::EventLoop, window::WindowBuilder};
+
+use crate::config::Config;
+
+use self::runtime::AppRuntime;
+
+pub async fn run(config: Config) -> anyhow::Result<()> {
+    let window_config = config.window;
+    let event_loop = EventLoop::new()?;
+    let window = Arc::new(
+        WindowBuilder::new()
+            .with_title("Decaf")
+            .with_inner_size(PhysicalSize::new(window_config.width, window_config.height))
+            .build(&event_loop)?,
+    );
+
+    let mut runtime = AppRuntime::new(window.clone(), config).await?;
+    runtime.capture_cursor(&window);
+    window.request_redraw();
+
+    event_loop.run(move |event, event_loop_target| match event {
+        Event::NewEvents(_) => {
+            runtime.begin_frame();
+        }
+        Event::DeviceEvent { event, .. } => {
+            runtime.handle_device_event(&event);
+        }
+        Event::WindowEvent { event, .. } => {
+            runtime.handle_window_event(&window, event, event_loop_target);
+        }
+        Event::AboutToWait => {
+            runtime.handle_about_to_wait(&window, event_loop_target);
+        }
+        _ => {}
+    })?;
+
+    #[allow(unreachable_code)]
+    Ok(())
+}

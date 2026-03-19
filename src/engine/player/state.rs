@@ -32,7 +32,7 @@ pub struct Player {
 impl Player {
     pub fn from_config(config: &PlayerConfig) -> Self {
         Self {
-            position: Vec3::new(config.spawn_x, config.spawn_y, config.spawn_z),
+            position: Vec3::ZERO,
             velocity: Vec3::ZERO,
             yaw: 0.0,
             pitch: 0.0,
@@ -79,12 +79,13 @@ impl Player {
 
     #[inline]
     pub fn forward_3d(&self) -> Vec3 {
-        let cp = self.pitch.cos();
-        let sp = self.pitch.sin();
-        let sy = self.yaw.sin();
-        let cy = self.yaw.cos();
+        let cosine_pitch = self.pitch.cos();
+        let sine_pitch = self.pitch.sin();
+        let sine_yaw = self.yaw.sin();
+        let cosine_yaw = self.yaw.cos();
 
-        Vec3::new(sy * cp, sp, -cy * cp).normalize_or_zero()
+        Vec3::new(sine_yaw * cosine_pitch, sine_pitch, -cosine_yaw * cosine_pitch)
+            .normalize_or_zero()
     }
 
     #[inline]
@@ -101,6 +102,12 @@ impl Player {
     }
 }
 
-pub fn camera_from_player(player: &Player, aspect: f32, camera_config: &CameraConfig) -> Camera {
-    Camera::from_config(player.eye_position(), player.forward_3d(), aspect, camera_config)
+pub fn camera_from_player(
+    player: &Player,
+    aspect: f32,
+    camera_config: &CameraConfig,
+    zoom_active: bool,
+) -> Camera {
+    let camera_config = camera_config.for_zoom_state(zoom_active);
+    Camera::from_config(player.eye_position(), player.forward_3d(), aspect, &camera_config)
 }

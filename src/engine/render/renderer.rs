@@ -16,7 +16,7 @@ use crate::{
             frustum::Frustum,
             gpu_types::{
                 BaseQuadVertex, DebugOverlayInput, DebugViewMode, DrawMeta, DrawRef,
-                GpuDrawIndirect, RenderBucket, RenderSettingsUniform, RenderStats,
+                GpuDrawIndirect, RenderBucket, RenderSettingsUniform, RenderStats, SkyUniform,
                 TextGlyphInstance, TextOverlayUniform,
             },
             hiz::HiZOcclusion,
@@ -30,11 +30,11 @@ use crate::{
 };
 
 use self::{
-    draw::{
-        build_draw_ref_bytes, chunk_face_can_face_camera, next_face_capacity,
-        transparent_batch_center,
+    draw::{build_draw_ref_bytes, next_face_capacity, transparent_batch_center},
+    pipelines::{
+        create_overlay_pipeline, create_screen_tint_pipeline, create_sky_pipeline,
+        create_voxel_pipeline, create_wireframe_pipeline,
     },
-    pipelines::{create_overlay_pipeline, create_voxel_pipeline, create_wireframe_pipeline},
 };
 
 pub struct Renderer {
@@ -54,6 +54,7 @@ pub struct Renderer {
     pub indirect_buffer: wgpu::Buffer,
     pub camera_buffer: wgpu::Buffer,
     pub render_settings_buffer: wgpu::Buffer,
+    pub _sky_uniform_buffer: wgpu::Buffer,
     pub overlay_uniform_buffer: wgpu::Buffer,
     pub overlay_instance_buffer: wgpu::Buffer,
     pub base_quad_buffer: wgpu::Buffer,
@@ -62,13 +63,16 @@ pub struct Renderer {
     pub scene_bind_group_layout: wgpu::BindGroupLayout,
     pub camera_bind_group: wgpu::BindGroup,
     pub scene_bind_group: wgpu::BindGroup,
+    pub sky_bind_group: wgpu::BindGroup,
     pub material_bind_group: wgpu::BindGroup,
     pub overlay_bind_group: wgpu::BindGroup,
 
+    pub sky_pipeline: wgpu::RenderPipeline,
     pub opaque_pipeline: wgpu::RenderPipeline,
     pub transparent_pipeline: wgpu::RenderPipeline,
     pub wireframe_pipeline: wgpu::RenderPipeline,
     pub overlay_pipeline: wgpu::RenderPipeline,
+    pub underwater_tint_pipeline: wgpu::RenderPipeline,
     pub hiz_occlusion: Option<HiZOcclusion>,
     pub mesher: ThreadedMesher,
     pub resolved_blocks: ResolvedBlockRegistry,
@@ -77,9 +81,13 @@ pub struct Renderer {
     pub debug_overlay: Option<DebugOverlayInput>,
     pub last_frame_stats: RenderStats,
     pub use_multi_draw_indirect: bool,
+    underwater_tint_active: bool,
+    meshing_enqueue_budget: usize,
+    mesh_upload_budget: usize,
     max_visible_draws: usize,
     overlay_config: OverlayConfig,
     clear_color: ClearColorConfig,
+    sky_enabled: bool,
     opaque_draw_scratch: Vec<DrawMeta>,
     transparent_draw_scratch: Vec<(f32, DrawMeta)>,
     staged_draw_scratch: Vec<DrawMeta>,
@@ -97,6 +105,7 @@ impl Renderer {
         resolved_blocks: ResolvedBlockRegistry,
         texture_registry: &TextureRegistry,
         render_config: &RenderConfig,
+        meshing_worker_count: usize,
     ) -> anyhow::Result<Self> {
         let instance = wgpu::Instance::default();
         let size = window.inner_size();
@@ -201,8 +210,17 @@ impl Renderer {
 
         let render_settings_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("render_settings_buffer"),
-            contents: bytemuck::bytes_of(&RenderSettingsUniform::new(DebugViewMode::Shaded, 0)),
+            contents: bytemuck::bytes_of(&RenderSettingsUniform::new(
+                DebugViewMode::Shaded,
+                0,
+                0.0,
+            )),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let sky_uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("sky_uniform_buffer"),
+            contents: bytemuck::bytes_of(&SkyUniform::from_config(render_config.sky)),
+            usage: wgpu::BufferUsages::UNIFORM,
         });
 
         let overlay_uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -245,7 +263,7 @@ impl Renderer {
         });
 
         let materials = Materials::from_texture_registry(&device, &queue, texture_registry)?;
-        let mesher = ThreadedMesher::new(resolved_blocks.clone());
+        let mesher = ThreadedMesher::new(resolved_blocks.clone(), meshing_worker_count);
 
         let camera_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("camera_bgl"),
@@ -343,6 +361,22 @@ impl Renderer {
                 },
             ],
         });
+        let sky_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("sky_bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: Some(non_zero_u64(
+                        std::mem::size_of::<SkyUniform>() as u64,
+                        "sky uniform size",
+                    )),
+                },
+                count: None,
+            }],
+        });
 
         let overlay_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("overlay_bgl"),
@@ -395,6 +429,14 @@ impl Renderer {
                 },
             ],
         });
+        let sky_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("sky_bg"),
+            layout: &sky_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: sky_uniform_buffer.as_entire_binding(),
+            }],
+        });
 
         let material_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("material_bg"),
@@ -424,6 +466,10 @@ impl Renderer {
             label: Some("voxel_shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders.wgsl").into()),
         });
+        let sky_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("sky_shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("sky.wgsl").into()),
+        });
         let overlay_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("overlay_shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("text_overlay.wgsl").into()),
@@ -434,13 +480,31 @@ impl Renderer {
             bind_group_layouts: &[&camera_bgl, &scene_bind_group_layout, &material_bgl],
             push_constant_ranges: &[],
         });
+        let sky_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("sky_pipeline_layout"),
+            bind_group_layouts: &[&camera_bgl, &sky_bgl],
+            push_constant_ranges: &[],
+        });
         let overlay_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("overlay_pipeline_layout"),
                 bind_group_layouts: &[&overlay_bgl],
                 push_constant_ranges: &[],
             });
+        let screen_tint_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("screen_tint_pipeline_layout"),
+                bind_group_layouts: &[],
+                push_constant_ranges: &[],
+            });
 
+        let sky_pipeline = create_sky_pipeline(
+            &device,
+            &sky_pipeline_layout,
+            &sky_shader,
+            surface_config.format,
+            depth_target.format,
+        );
         let opaque_pipeline = create_voxel_pipeline(
             &device,
             &pipeline_layout,
@@ -476,6 +540,17 @@ impl Renderer {
             surface_config.format,
             depth_target.format,
         );
+        let underwater_tint_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("underwater_tint_shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("underwater_tint.wgsl").into()),
+        });
+        let underwater_tint_pipeline = create_screen_tint_pipeline(
+            &device,
+            &screen_tint_pipeline_layout,
+            &underwater_tint_shader,
+            surface_config.format,
+            depth_target.format,
+        );
 
         if use_multi_draw_indirect {
             crate::log_info!("Using multi_draw_indirect renderer path");
@@ -497,6 +572,7 @@ impl Renderer {
             indirect_buffer,
             camera_buffer,
             render_settings_buffer,
+            _sky_uniform_buffer: sky_uniform_buffer,
             overlay_uniform_buffer,
             overlay_instance_buffer,
             base_quad_buffer,
@@ -504,12 +580,15 @@ impl Renderer {
             scene_bind_group_layout,
             camera_bind_group,
             scene_bind_group,
+            sky_bind_group,
             material_bind_group,
             overlay_bind_group,
+            sky_pipeline,
             opaque_pipeline,
             transparent_pipeline,
             wireframe_pipeline,
             overlay_pipeline,
+            underwater_tint_pipeline,
             hiz_occlusion,
             mesher,
             resolved_blocks,
@@ -521,9 +600,13 @@ impl Renderer {
                 ..Default::default()
             },
             use_multi_draw_indirect,
+            underwater_tint_active: false,
+            meshing_enqueue_budget: render_config.meshing_enqueue_budget,
+            mesh_upload_budget: render_config.mesh_upload_budget,
             max_visible_draws,
             overlay_config: render_config.overlay,
             clear_color: render_config.clear_color,
+            sky_enabled: render_config.sky.enabled,
             opaque_draw_scratch: Vec::new(),
             transparent_draw_scratch: Vec::new(),
             staged_draw_scratch: Vec::new(),
@@ -538,6 +621,10 @@ impl Renderer {
 
     pub fn set_debug_overlay(&mut self, overlay: Option<DebugOverlayInput>) {
         self.debug_overlay = overlay;
+    }
+
+    pub fn set_underwater_tint_active(&mut self, active: bool) {
+        self.underwater_tint_active = active;
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -561,11 +648,10 @@ impl Renderer {
     pub fn pump_meshing(&mut self, world: &mut World, focus: MeshingFocus) -> anyhow::Result<()> {
         let _span = crate::profile_span!("renderer::pump_meshing");
 
-        self.mesher.enqueue_dirty(world, focus)?;
-
-        for result in self.mesher.try_take_ready() {
+        for result in self.mesher.try_take_ready_limit(self.mesh_upload_budget) {
             self.upload_chunk_mesh(result.coord, result.mesh)?;
         }
+        self.mesher.enqueue_dirty(world, focus, self.meshing_enqueue_budget)?;
 
         Ok(())
     }
@@ -573,12 +659,14 @@ impl Renderer {
     pub fn finish_meshing(&mut self, world: &mut World, focus: MeshingFocus) -> anyhow::Result<()> {
         let _span = crate::profile_span!("renderer::finish_meshing");
 
-        self.pump_meshing(world, focus)?;
+        self.mesher.enqueue_dirty(world, focus, 0)?;
 
-        while self.mesher.has_pending() {
-            let result = self.mesher.recv_ready()?;
-            self.upload_chunk_mesh(result.coord, result.mesh)?;
-            self.mesher.enqueue_dirty(world, focus)?;
+        while self.mesher.has_pending_work() {
+            if self.mesher.has_inflight_jobs() {
+                let result = self.mesher.recv_ready()?;
+                self.upload_chunk_mesh(result.coord, result.mesh)?;
+            }
+            self.mesher.enqueue_dirty(world, focus, 0)?;
         }
 
         Ok(())
@@ -592,7 +680,7 @@ impl Renderer {
         }
     }
 
-    pub fn render(&mut self, camera: &Camera) -> anyhow::Result<()> {
+    pub fn render(&mut self, camera: &Camera, time_seconds: f32) -> anyhow::Result<()> {
         let _span = crate::profile_span!("renderer::render");
 
         let mut opaque_draws = std::mem::take(&mut self.opaque_draw_scratch);
@@ -623,14 +711,13 @@ impl Renderer {
                     self.use_multi_draw_indirect
                         && self.debug_view_mode != DebugViewMode::Wireframe,
                 ),
+                time_seconds,
             )),
         );
 
         let frustum = Frustum::from_camera(camera);
         let mut frustum_culled_chunks = 0u32;
         let mut occlusion_culled_chunks = 0u32;
-        let mut directional_culled_draws = 0u32;
-
         for (&coord, entry) in &self.gpu_entries {
             let origin = coord.world_origin();
             let min = origin.as_vec3();
@@ -651,17 +738,9 @@ impl Renderer {
             }
 
             for dir in 0..6usize {
-                let faces_camera =
-                    chunk_face_can_face_camera(camera.position, min, max, dir as u32);
-
                 if let Some(slice) = entry.faces[RenderBucket::Opaque as usize][dir]
                     && slice.count > 0
                 {
-                    if !faces_camera {
-                        directional_culled_draws += 1;
-                        continue;
-                    }
-
                     opaque_draws.push(DrawMeta {
                         chunk_origin: [origin.x, origin.y, origin.z, 0],
                         face_dir: dir as u32,
@@ -673,11 +752,6 @@ impl Renderer {
                 if let Some(slice) = entry.faces[RenderBucket::Transparent as usize][dir]
                     && slice.count > 0
                 {
-                    if !faces_camera {
-                        directional_culled_draws += 1;
-                        continue;
-                    }
-
                     let batch_center = transparent_batch_center(origin, dir as u32);
                     let distance_sq = (batch_center - camera.position).length_squared();
                     transparent_draws.push((
@@ -740,15 +814,11 @@ impl Renderer {
         }
 
         let current_stats = RenderStats {
-            loaded_chunks: self
-                .debug_overlay
-                .map(|overlay| overlay.loaded_chunks)
-                .unwrap_or(self.gpu_entries.len() as u32),
             gpu_chunks: self.gpu_entries.len() as u32,
             drawn_chunks,
             frustum_culled_chunks,
             occlusion_culled_chunks,
-            directional_culled_draws,
+            directional_culled_draws: 0,
             opaque_draws: opaque_count as u32,
             transparent_draws: (staged_draws.len() - opaque_count) as u32,
             meshing_pending_chunks: self.mesher.pending_count() as u32,
@@ -808,6 +878,14 @@ impl Renderer {
                 timestamp_writes: None,
             });
 
+            if self.sky_enabled && self.debug_view_mode == DebugViewMode::Shaded {
+                pass.set_pipeline(&self.sky_pipeline);
+                pass.set_bind_group(0, &self.camera_bind_group, &[]);
+                pass.set_bind_group(1, &self.sky_bind_group, &[]);
+                pass.set_vertex_buffer(0, self.base_quad_buffer.slice(..));
+                pass.draw(0..4, 0..1);
+            }
+
             pass.set_bind_group(0, &self.camera_bind_group, &[]);
             pass.set_bind_group(2, &self.material_bind_group, &[]);
             if self.debug_view_mode == DebugViewMode::Wireframe {
@@ -853,6 +931,12 @@ impl Renderer {
                         }
                     }
                 }
+            }
+
+            if self.underwater_tint_active {
+                pass.set_pipeline(&self.underwater_tint_pipeline);
+                pass.set_vertex_buffer(0, self.base_quad_buffer.slice(..));
+                pass.draw(0..4, 0..1);
             }
 
             if !overlay_instances.is_empty() {

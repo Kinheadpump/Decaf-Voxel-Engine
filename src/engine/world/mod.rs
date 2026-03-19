@@ -1,7 +1,9 @@
 pub mod accessor;
+pub mod biome;
 pub mod block;
 pub mod chunk;
 pub mod coord;
+pub mod generation;
 pub mod generator;
 pub mod mesher;
 pub mod storage;
