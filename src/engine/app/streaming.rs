@@ -234,7 +234,7 @@ mod tests {
     impl ChunkGenerator for TestGenerator {
         fn generate(&self, _coord: ChunkCoord, chunk: &mut Chunk) {
             let voxel = Voxel::from_block_id(self.fill_block);
-            chunk.voxels.fill(voxel);
+            chunk.voxels_mut().fill(voxel);
             chunk.bump_generation();
         }
     }

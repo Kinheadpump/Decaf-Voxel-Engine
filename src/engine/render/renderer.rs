@@ -45,6 +45,10 @@ pub struct MeshingPassStats {
     pub dirty_slices: u32,
     pub slice_buffer_growths: u32,
     pub build_cpu_time_ns: u64,
+    pub snapshot_capture_cpu_time_ns: u64,
+    pub slice_construction_cpu_time_ns: u64,
+    pub greedy_merge_cpu_time_ns: u64,
+    pub flatten_cpu_time_ns: u64,
     pub upload_cpu_time_ns: u64,
     pub wait_cpu_time_ns: u64,
 }

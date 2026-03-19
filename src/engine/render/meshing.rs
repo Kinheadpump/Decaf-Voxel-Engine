@@ -30,6 +30,7 @@ struct MeshJob {
     request_id: u64,
     dirty_region: ChunkMeshDirtyRegion,
     previous_mesh: Option<ChunkMeshSlices>,
+    snapshot_capture_cpu_time_ns: u64,
     snapshot: ChunkMeshingSnapshot,
 }
 
@@ -185,12 +186,14 @@ impl ThreadedMesher {
             let Some(region) = self.deferred_dirty.remove(&coord) else {
                 continue;
             };
+            let snapshot_started_at = Instant::now();
             let Some(snapshot) = ChunkMeshingSnapshot::capture(world, coord) else {
                 self.pending_jobs.remove(&coord);
                 self.deferred_dirty.remove(&coord);
                 self.mesh_caches.remove(&coord);
                 continue;
             };
+            let snapshot_capture_cpu_time_ns = duration_to_nanos(snapshot_started_at.elapsed());
 
             let generation = snapshot.generation;
             let full_rebuild = region.is_full() || !self.mesh_caches.contains_key(&coord);
@@ -203,7 +206,13 @@ impl ThreadedMesher {
             self.pending_jobs.insert(coord, PendingJob { request_id, generation });
             world.mark_chunk_meshing(coord, generation);
             job_tx
-                .send(MeshJob { request_id, dirty_region, previous_mesh, snapshot })
+                .send(MeshJob {
+                    request_id,
+                    dirty_region,
+                    previous_mesh,
+                    snapshot_capture_cpu_time_ns,
+                    snapshot,
+                })
                 .context("failed to send chunk meshing job to worker thread")?;
             queued_chunk_count += 1;
         }
@@ -303,7 +312,6 @@ fn worker_loop(
         let _span = crate::profile_span!("mesher::build_chunk_mesh");
         let coord = job.snapshot.coord;
         let generation = job.snapshot.generation;
-        let build_started_at = Instant::now();
         let (mesh_slices, mut profile) = if let Some(mut mesh_slices) = job.previous_mesh {
             let profile = rebuild_chunk_mesh_slices(
                 job.dirty_region,
@@ -322,8 +330,11 @@ fn worker_loop(
                 resolved_blocks.as_ref(),
             )
         };
+        let flatten_started_at = Instant::now();
         let mesh = mesh_slices.flatten();
-        profile.build_cpu_time_ns = duration_to_nanos(build_started_at.elapsed());
+        profile.snapshot_capture_cpu_time_ns = job.snapshot_capture_cpu_time_ns;
+        profile.flatten_cpu_time_ns = duration_to_nanos(flatten_started_at.elapsed());
+        profile.recompute_total();
 
         if result_tx
             .send(WorkerMeshResult {
@@ -372,10 +383,14 @@ fn chunk_priority_key(coord: ChunkCoord, focus: MeshingFocus) -> (i32, i32, i32,
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     use crate::engine::core::math::IVec3;
     use crate::engine::world::{
-        block::create_default_block_registry, chunk::Chunk, storage::World,
+        block::{create_default_block_registry, id::BlockId},
+        chunk::Chunk,
+        storage::World,
+        voxel::Voxel,
     };
 
     use super::*;
@@ -431,5 +446,34 @@ mod tests {
         assert_eq!(mesher.pending_jobs[&coord].request_id, 7);
         assert!(mesher.deferred_dirty.contains_key(&coord));
         Ok(())
+    }
+
+    #[test]
+    fn snapshot_capture_shares_chunk_storage() {
+        let center = ChunkCoord(IVec3::ZERO);
+        let east = ChunkCoord(IVec3::X);
+        let mut world = World::new();
+        let mut center_chunk = Chunk::new();
+        let mut east_chunk = Chunk::new();
+
+        center_chunk.set(1, 2, 3, Voxel::from_block_id(BlockId(5)));
+        east_chunk.set(4, 5, 6, Voxel::from_block_id(BlockId(6)));
+        world.insert_chunk(center, center_chunk);
+        world.insert_chunk(east, east_chunk);
+
+        let snapshot = ChunkMeshingSnapshot::capture(&world, center)
+            .expect("snapshot should capture loaded center chunk");
+        let world_center = world.chunks.get(&center).expect("center chunk should exist");
+        let world_east = world.chunks.get(&east).expect("east chunk should exist");
+        let east_snapshot = snapshot.neighbors[FaceDir::PosX as usize]
+            .as_ref()
+            .expect("east neighbor should be captured");
+
+        assert!(Arc::ptr_eq(&snapshot.center.voxels, &world_center.voxels));
+        assert!(Arc::ptr_eq(
+            &snapshot.center.column_biome_tints,
+            &world_center.column_biome_tints
+        ));
+        assert!(Arc::ptr_eq(&east_snapshot.voxels, &world_east.voxels));
     }
 }

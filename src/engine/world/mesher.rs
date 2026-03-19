@@ -1,4 +1,4 @@
-use std::{cell::RefCell, thread_local};
+use std::{cell::RefCell, thread_local, time::Instant};
 
 use crate::engine::{
     core::types::{CHUNK_SIZE, FaceDir},
@@ -167,6 +167,20 @@ pub struct MeshingBuildProfile {
     pub slice_buffer_growths: u32,
     pub dirty_slice_count: u32,
     pub build_cpu_time_ns: u64,
+    pub snapshot_capture_cpu_time_ns: u64,
+    pub slice_construction_cpu_time_ns: u64,
+    pub greedy_merge_cpu_time_ns: u64,
+    pub flatten_cpu_time_ns: u64,
+}
+
+impl MeshingBuildProfile {
+    pub(crate) fn recompute_total(&mut self) {
+        self.build_cpu_time_ns = self
+            .snapshot_capture_cpu_time_ns
+            .saturating_add(self.slice_construction_cpu_time_ns)
+            .saturating_add(self.greedy_merge_cpu_time_ns)
+            .saturating_add(self.flatten_cpu_time_ns);
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -266,6 +280,8 @@ pub fn rebuild_chunk_mesh_slices(
     });
 
     out.source_generation = chunk.generation;
+    let mut profile = profile;
+    profile.recompute_total();
     profile
 }
 
@@ -285,6 +301,7 @@ fn build_direction_slice_into(
     let mask = &mut scratch.mask[..];
     let used = &mut scratch.used[..];
     let neighbor_voxels = &mut scratch.neighbor_voxels[..];
+    let slice_construction_started_at = Instant::now();
 
     prefetch_neighbor_slice(chunk, coord, neighbors, axis_map, dirty_slice, neighbor_voxels);
     used.fill(false);
@@ -329,6 +346,11 @@ fn build_direction_slice_into(
             };
         }
     }
+    profile.slice_construction_cpu_time_ns = profile
+        .slice_construction_cpu_time_ns
+        .saturating_add(duration_to_nanos(slice_construction_started_at.elapsed()));
+
+    let greedy_merge_started_at = Instant::now();
 
     // Greedy meshing on the mask
     for v_index in 0..CHUNK_SIZE {
@@ -409,6 +431,9 @@ fn build_direction_slice_into(
             }
         }
     }
+    profile.greedy_merge_cpu_time_ns = profile
+        .greedy_merge_cpu_time_ns
+        .saturating_add(duration_to_nanos(greedy_merge_started_at.elapsed()));
 }
 
 fn prefetch_neighbor_slice(
@@ -546,8 +571,15 @@ fn resolve_face_tint(chunk: &Chunk, block: ResolvedBlock, dir: FaceDir, x: usize
     }
 }
 
+#[inline]
+fn duration_to_nanos(duration: std::time::Duration) -> u64 {
+    duration.as_nanos().min(u128::from(u64::MAX)) as u64
+}
+
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::engine::{
         render::materials::create_texture_registry,
@@ -712,6 +744,17 @@ mod tests {
         assert!(first_profile.slice_buffer_growths > 0);
         assert_eq!(second_profile.faces_emitted, first_profile.faces_emitted);
         assert_eq!(second_profile.slice_buffer_growths, 0);
+    }
+
+    #[test]
+    fn chunk_clone_uses_shared_arc_storage() {
+        let mut chunk = Chunk::new();
+        chunk.set(0, 0, 0, crate::engine::world::voxel::Voxel::from_block_id(BlockId(3)));
+
+        let clone = chunk.clone();
+
+        assert!(Arc::ptr_eq(&chunk.voxels, &clone.voxels));
+        assert!(Arc::ptr_eq(&chunk.column_biome_tints, &clone.column_biome_tints));
     }
 
     fn test_resolved_registry() -> ResolvedBlockRegistry {

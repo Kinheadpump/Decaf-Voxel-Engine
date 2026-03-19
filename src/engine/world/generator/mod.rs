@@ -139,6 +139,7 @@ impl StagedGenerator {
     ) {
         let origin = coord.world_origin().as_ivec3();
         let (columns, solid_mask) = scratch.buffers_mut();
+        let (voxels, column_biome_tints) = chunk.storage_mut();
         self.prepare_columns(origin.x, origin.z, columns);
         self.populate_solid_mask(origin.x, origin.y, origin.z, columns, solid_mask);
 
@@ -150,11 +151,8 @@ impl StagedGenerator {
                 let world_z = origin.z + local_z as i32;
                 let surface_material_min_y = column.surface_height.floor() as i32 - dirt_depth;
                 let mut material_depth = None;
-                chunk.set_biome_tints(
-                    local_x,
-                    local_z,
-                    ColumnBiomeTints { grass: column.grass_color, foliage: column.foliage_color },
-                );
+                column_biome_tints[column_index(local_x, local_z)] =
+                    ColumnBiomeTints { grass: column.grass_color, foliage: column.foliage_color };
 
                 for local_y in (0..CHUNK_SIZE).rev() {
                     let world_y = origin.y + local_y as i32;
@@ -195,7 +193,7 @@ impl StagedGenerator {
                         Voxel::AIR
                     };
 
-                    chunk.voxels[voxel_index(local_x, local_y, local_z)] = voxel;
+                    voxels[voxel_index(local_x, local_y, local_z)] = voxel;
                 }
             }
         }

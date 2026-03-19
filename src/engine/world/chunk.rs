@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::engine::{
     core::types::{CHUNK_SIZE, CHUNK_VOLUME},
     world::{coord::LocalVoxelPos, voxel::Voxel},
@@ -35,16 +37,16 @@ impl Default for ColumnBiomeTints {
 
 #[derive(Clone)]
 pub struct Chunk {
-    pub voxels: Box<[Voxel; CHUNK_VOLUME]>,
-    pub column_biome_tints: Box<[ColumnBiomeTints; CHUNK_COLUMN_COUNT]>,
+    pub voxels: Arc<[Voxel; CHUNK_VOLUME]>,
+    pub column_biome_tints: Arc<[ColumnBiomeTints; CHUNK_COLUMN_COUNT]>,
     pub generation: u32,
 }
 
 impl Chunk {
     pub fn new() -> Self {
         Self {
-            voxels: Box::new([Voxel::AIR; CHUNK_VOLUME]),
-            column_biome_tints: Box::new([ColumnBiomeTints::default(); CHUNK_COLUMN_COUNT]),
+            voxels: Arc::new([Voxel::AIR; CHUNK_VOLUME]),
+            column_biome_tints: Arc::new([ColumnBiomeTints::default(); CHUNK_COLUMN_COUNT]),
             generation: 0,
         }
     }
@@ -56,8 +58,34 @@ impl Chunk {
 
     #[inline]
     pub fn set(&mut self, x: usize, y: usize, z: usize, voxel: Voxel) {
-        self.voxels[voxel_index(x, y, z)] = voxel;
+        self.voxels_mut()[voxel_index(x, y, z)] = voxel;
         self.generation = self.generation.wrapping_add(1);
+    }
+
+    /// Returns mutable access to both storage arrays. Meshing snapshots clone
+    /// chunks cheaply by sharing these `Arc` buffers until a later mutation
+    /// forces clone-on-write.
+    #[inline]
+    pub fn storage_mut(
+        &mut self,
+    ) -> (
+        &mut [Voxel; CHUNK_VOLUME],
+        &mut [ColumnBiomeTints; CHUNK_COLUMN_COUNT],
+    ) {
+        let voxels = Arc::make_mut(&mut self.voxels);
+        let column_biome_tints = Arc::make_mut(&mut self.column_biome_tints);
+        (voxels, column_biome_tints)
+    }
+
+    #[inline]
+    pub fn voxels_mut(&mut self) -> &mut [Voxel; CHUNK_VOLUME] {
+        Arc::make_mut(&mut self.voxels)
+    }
+
+    #[inline]
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn column_biome_tints_mut(&mut self) -> &mut [ColumnBiomeTints; CHUNK_COLUMN_COUNT] {
+        Arc::make_mut(&mut self.column_biome_tints)
     }
 
     /// Reads a voxel using a chunk-local position that is already known to be
@@ -87,7 +115,48 @@ impl Chunk {
     }
 
     #[inline]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn set_biome_tints(&mut self, x: usize, z: usize, tints: ColumnBiomeTints) {
-        self.column_biome_tints[column_index(x, z)] = tints;
+        self.column_biome_tints_mut()[column_index(x, z)] = tints;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use crate::engine::world::block::id::BlockId;
+
+    use super::*;
+
+    #[test]
+    fn chunk_clone_shares_storage_until_write() {
+        let mut chunk = Chunk::new();
+        chunk.set(1, 2, 3, Voxel::from_block_id(BlockId(7)));
+        chunk.set_biome_tints(
+            1,
+            3,
+            ColumnBiomeTints { grass: [10, 20, 30], foliage: [40, 50, 60] },
+        );
+
+        let mut clone = chunk.clone();
+
+        assert!(Arc::ptr_eq(&chunk.voxels, &clone.voxels));
+        assert!(Arc::ptr_eq(&chunk.column_biome_tints, &clone.column_biome_tints));
+
+        clone.set(1, 2, 3, Voxel::from_block_id(BlockId(9)));
+        clone.set_biome_tints(
+            1,
+            3,
+            ColumnBiomeTints { grass: [90, 80, 70], foliage: [60, 50, 40] },
+        );
+
+        assert!(!Arc::ptr_eq(&chunk.voxels, &clone.voxels));
+        assert!(!Arc::ptr_eq(&chunk.column_biome_tints, &clone.column_biome_tints));
+        assert_eq!(chunk.get(1, 2, 3), Voxel::from_block_id(BlockId(7)));
+        assert_eq!(
+            chunk.biome_tints(1, 3),
+            ColumnBiomeTints { grass: [10, 20, 30], foliage: [40, 50, 60] }
+        );
     }
 }

@@ -231,6 +231,10 @@ struct PassTotals {
     dirty_slices: u128,
     slice_buffer_growths: u128,
     build_cpu_time_ns: u128,
+    snapshot_capture_cpu_time_ns: u128,
+    slice_construction_cpu_time_ns: u128,
+    greedy_merge_cpu_time_ns: u128,
+    flatten_cpu_time_ns: u128,
     upload_cpu_time_ns: u128,
     wait_cpu_time_ns: u128,
 }
@@ -254,6 +258,14 @@ impl BenchmarkAccumulator {
         self.pass_totals.slice_buffer_growths +=
             u128::from(iteration.pass.slice_buffer_growths);
         self.pass_totals.build_cpu_time_ns += u128::from(iteration.pass.build_cpu_time_ns);
+        self.pass_totals.snapshot_capture_cpu_time_ns +=
+            u128::from(iteration.pass.snapshot_capture_cpu_time_ns);
+        self.pass_totals.slice_construction_cpu_time_ns +=
+            u128::from(iteration.pass.slice_construction_cpu_time_ns);
+        self.pass_totals.greedy_merge_cpu_time_ns +=
+            u128::from(iteration.pass.greedy_merge_cpu_time_ns);
+        self.pass_totals.flatten_cpu_time_ns +=
+            u128::from(iteration.pass.flatten_cpu_time_ns);
         self.pass_totals.upload_cpu_time_ns += u128::from(iteration.pass.upload_cpu_time_ns);
         self.pass_totals.wait_cpu_time_ns += u128::from(iteration.pass.wait_cpu_time_ns);
     }
@@ -275,6 +287,22 @@ impl BenchmarkAccumulator {
                     iterations,
                 ),
                 build_cpu_time_ns: average_u64(self.pass_totals.build_cpu_time_ns, iterations),
+                snapshot_capture_cpu_time_ns: average_u64(
+                    self.pass_totals.snapshot_capture_cpu_time_ns,
+                    iterations,
+                ),
+                slice_construction_cpu_time_ns: average_u64(
+                    self.pass_totals.slice_construction_cpu_time_ns,
+                    iterations,
+                ),
+                greedy_merge_cpu_time_ns: average_u64(
+                    self.pass_totals.greedy_merge_cpu_time_ns,
+                    iterations,
+                ),
+                flatten_cpu_time_ns: average_u64(
+                    self.pass_totals.flatten_cpu_time_ns,
+                    iterations,
+                ),
                 upload_cpu_time_ns: average_u64(self.pass_totals.upload_cpu_time_ns, iterations),
                 wait_cpu_time_ns: average_u64(self.pass_totals.wait_cpu_time_ns, iterations),
             },
@@ -441,6 +469,7 @@ fn print_report(
         nanos_to_ms(initial_full_build.pass.wait_cpu_time_ns),
         format_gpu_wait(initial_full_build.gpu_wait_time_ns, benchmark_config.wait_for_gpu),
     );
+    log_stage_breakdown("Initial stage breakdown", initial_full_build.pass);
     crate::log_info!(
         "Steady state over {} iterations: wall avg {:.3} ms (min {:.3}, max {:.3}){}",
         steady_state.iterations,
@@ -459,29 +488,63 @@ fn print_report(
         nanos_to_ms(steady_state.pass_avg.wait_cpu_time_ns),
         steady_state.pass_avg.slice_buffer_growths,
     );
+    log_stage_breakdown("Steady-state stage averages", steady_state.pass_avg);
     crate::log_info!(
         "Analysis: {}",
         classify_bottleneck(steady_state, benchmark_config.wait_for_gpu)
     );
 }
 
-fn classify_bottleneck(summary: BenchmarkSummary, wait_for_gpu: bool) -> &'static str {
+fn log_stage_breakdown(label: &str, pass: MeshingPassStats) {
+    crate::log_info!(
+        "{label}: snapshot {:.3} ms | mask/slice {:.3} ms | greedy {:.3} ms | flatten {:.3} ms",
+        nanos_to_ms(pass.snapshot_capture_cpu_time_ns),
+        nanos_to_ms(pass.slice_construction_cpu_time_ns),
+        nanos_to_ms(pass.greedy_merge_cpu_time_ns),
+        nanos_to_ms(pass.flatten_cpu_time_ns),
+    );
+}
+
+fn classify_bottleneck(summary: BenchmarkSummary, wait_for_gpu: bool) -> String {
     let wall = summary.wall_cpu_avg_ns.max(1);
     let upload_share = summary.pass_avg.upload_cpu_time_ns as f64 / wall as f64;
     let wait_share = summary.pass_avg.wait_cpu_time_ns as f64 / wall as f64;
     let gpu_wait_share = summary.gpu_wait_avg_ns as f64 / wall as f64;
+    let dominant_stage = dominant_meshing_stage(summary.pass_avg);
 
     if wait_for_gpu && gpu_wait_share >= 0.50 {
-        "GPU completion time is a major end-to-end cost for this workload."
+        "GPU completion time is a major end-to-end cost for this workload.".to_string()
     } else if upload_share >= 0.45 {
         "CPU-side mesh upload is taking a large share of wall time and is the first place to investigate."
+            .to_string()
     } else if wait_share >= 0.25 {
-        "The main thread is spending noticeable time waiting on meshing workers, so chunk meshing is the current wall-time bottleneck."
+        format!(
+            "The main thread is spending noticeable time waiting on meshing workers, so chunk meshing is the current wall-time bottleneck. Inside meshing, {dominant_stage} dominates."
+        )
     } else if summary.pass_avg.build_cpu_time_ns > summary.pass_avg.upload_cpu_time_ns * 2 {
-        "Meshing consumes more total CPU than upload, but worker parallelism is hiding part of that cost."
+        format!(
+            "Meshing consumes more total CPU than upload, but worker parallelism is hiding part of that cost. Inside meshing, {dominant_stage} dominates."
+        )
     } else {
         "Meshing and upload are fairly balanced in this benchmark; profile both before picking the next optimization."
+            .to_string()
     }
+}
+
+fn dominant_meshing_stage(pass: MeshingPassStats) -> &'static str {
+    let mut dominant = ("snapshot capture", pass.snapshot_capture_cpu_time_ns);
+
+    for candidate in [
+        ("mask/slice construction", pass.slice_construction_cpu_time_ns),
+        ("greedy merging", pass.greedy_merge_cpu_time_ns),
+        ("flattening", pass.flatten_cpu_time_ns),
+    ] {
+        if candidate.1 > dominant.1 {
+            dominant = candidate;
+        }
+    }
+
+    dominant.0
 }
 
 fn format_gpu_wait(gpu_wait_time_ns: u64, wait_for_gpu: bool) -> String {
@@ -530,6 +593,10 @@ mod tests {
                 dirty_slices: 256,
                 slice_buffer_growths: 0,
                 build_cpu_time_ns: 4_000_000,
+                snapshot_capture_cpu_time_ns: 100_000,
+                slice_construction_cpu_time_ns: 2_300_000,
+                greedy_merge_cpu_time_ns: 1_200_000,
+                flatten_cpu_time_ns: 400_000,
                 upload_cpu_time_ns: 5_500_000,
                 wait_cpu_time_ns: 500_000,
             },
@@ -552,6 +619,10 @@ mod tests {
                 dirty_slices: 256,
                 slice_buffer_growths: 0,
                 build_cpu_time_ns: 12_000_000,
+                snapshot_capture_cpu_time_ns: 150_000,
+                slice_construction_cpu_time_ns: 7_000_000,
+                greedy_merge_cpu_time_ns: 4_200_000,
+                flatten_cpu_time_ns: 650_000,
                 upload_cpu_time_ns: 1_000_000,
                 wait_cpu_time_ns: 3_500_000,
             },

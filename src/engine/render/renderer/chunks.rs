@@ -78,6 +78,22 @@ impl Renderer {
             .last_meshing_pass_stats
             .build_cpu_time_ns
             .saturating_add(profile.build_cpu_time_ns);
+        self.last_meshing_pass_stats.snapshot_capture_cpu_time_ns = self
+            .last_meshing_pass_stats
+            .snapshot_capture_cpu_time_ns
+            .saturating_add(profile.snapshot_capture_cpu_time_ns);
+        self.last_meshing_pass_stats.slice_construction_cpu_time_ns = self
+            .last_meshing_pass_stats
+            .slice_construction_cpu_time_ns
+            .saturating_add(profile.slice_construction_cpu_time_ns);
+        self.last_meshing_pass_stats.greedy_merge_cpu_time_ns = self
+            .last_meshing_pass_stats
+            .greedy_merge_cpu_time_ns
+            .saturating_add(profile.greedy_merge_cpu_time_ns);
+        self.last_meshing_pass_stats.flatten_cpu_time_ns = self
+            .last_meshing_pass_stats
+            .flatten_cpu_time_ns
+            .saturating_add(profile.flatten_cpu_time_ns);
         let upload_started_at = Instant::now();
         self.upload_chunk_mesh(coord, mesh)?;
         self.last_meshing_pass_stats.upload_cpu_time_ns = self
