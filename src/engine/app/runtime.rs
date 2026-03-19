@@ -56,6 +56,7 @@ pub(super) struct AppRuntime {
     world: World,
     block_registry: BlockRegistry,
     save_file: PathBuf,
+    save_context: persistence::WorldSaveContext,
     input: InputState,
     total_time: f32,
     fps_counter: FpsCounter,
@@ -70,6 +71,7 @@ impl AppRuntime {
         let player_config = config.player;
         let world_config = config.world;
         let save_file = persistence::save_path(&world_config.save_file);
+        let save_context = persistence::WorldSaveContext::from_world_config(&world_config);
 
         let render_radius_xz = render_config.render_radius_xz.max(0);
         let render_radius_y = render_config.render_radius_y.max(0);
@@ -114,7 +116,8 @@ impl AppRuntime {
         player.position = spawn_position;
         let initial_focus = meshing_focus_from_player(&player);
         let mut world = World::new();
-        let persistent_edits = persistence::load_block_edits(&save_file, &block_registry)?;
+        let persistent_edits =
+            persistence::load_block_edits(&save_file, &save_context, &block_registry)?;
         for (position, block_id) in persistent_edits.iter().copied() {
             world.load_persistent_edit_world(position, block_id);
         }
@@ -158,6 +161,7 @@ impl AppRuntime {
             world,
             block_registry,
             save_file,
+            save_context,
             input: InputState::new(),
             total_time: 0.0,
             fps_counter: FpsCounter::new(),
@@ -388,7 +392,12 @@ impl AppRuntime {
     }
 
     fn persist_world_edits(&self) -> anyhow::Result<()> {
-        persistence::save_block_edits(&self.save_file, &self.world, &self.block_registry)
+        persistence::save_block_edits(
+            &self.save_file,
+            &self.save_context,
+            &self.world,
+            &self.block_registry,
+        )
     }
 }
 
