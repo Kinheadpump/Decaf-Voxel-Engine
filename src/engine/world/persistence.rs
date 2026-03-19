@@ -6,12 +6,10 @@ use std::{
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
-use crate::engine::{
-    core::math::IVec3,
-    world::{
-        block::{id::BlockId, registry::BlockRegistry},
-        storage::World,
-    },
+use crate::engine::world::{
+    block::{id::BlockId, registry::BlockRegistry},
+    coord::WorldVoxelPos,
+    storage::World,
 };
 
 const WORLD_SAVE_VERSION: u32 = 1;
@@ -34,7 +32,7 @@ struct SavedBlockEdit {
 pub fn load_block_edits(
     path: &Path,
     block_registry: &BlockRegistry,
-) -> anyhow::Result<Vec<(IVec3, BlockId)>> {
+) -> anyhow::Result<Vec<(WorldVoxelPos, BlockId)>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
@@ -60,7 +58,7 @@ pub fn load_block_edits(
             );
             continue;
         };
-        edits.push((IVec3::new(edit.x, edit.y, edit.z), block_id));
+        edits.push((WorldVoxelPos::new(edit.x, edit.y, edit.z), block_id));
     }
 
     Ok(edits)
@@ -77,9 +75,9 @@ pub fn save_block_edits(
             .get(block_id)
             .with_context(|| format!("block id {} is not registered", block_id.0))?;
         edits.push(SavedBlockEdit {
-            x: position.x,
-            y: position.y,
-            z: position.z,
+            x: position.as_ivec3().x,
+            y: position.as_ivec3().y,
+            z: position.as_ivec3().z,
             block: block.name.clone(),
         });
     }
@@ -116,6 +114,7 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
+    use crate::engine::core::math::IVec3;
     use crate::engine::world::{
         block::create_default_block_registry, chunk::Chunk, coord::ChunkCoord,
     };
@@ -137,7 +136,7 @@ mod tests {
         save_block_edits(&save_path, &world, &registry)?;
         let edits = load_block_edits(&save_path, &registry)?;
 
-        assert_eq!(edits, vec![(IVec3::new(2, 3, 4), stone)]);
+        assert_eq!(edits, vec![(WorldVoxelPos::new(2, 3, 4), stone)]);
 
         if save_path.exists() {
             fs::remove_file(&save_path)?;

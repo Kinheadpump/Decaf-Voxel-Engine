@@ -16,9 +16,9 @@ use crate::engine::{
         accessor::WorldVoxelReader,
         block::resolved::ResolvedBlockRegistry,
         chunk::Chunk,
-        coord::ChunkCoord,
+        coord::{ChunkCoord, WorldVoxelPos},
         mesher::{
-            ChunkMeshDirtyRegion, ChunkMeshSlices, build_chunk_mesh_slices,
+            ChunkMeshDirtyRegion, ChunkMeshSlices, MeshingBuildProfile, build_chunk_mesh_slices,
             rebuild_chunk_mesh_slices,
         },
         storage::{DirtyChunkEntry, World},
@@ -39,11 +39,13 @@ struct WorkerMeshResult {
     pub generation: u32,
     pub mesh: crate::engine::render::gpu_types::ChunkMeshCpu,
     pub mesh_slices: ChunkMeshSlices,
+    pub profile: MeshingBuildProfile,
 }
 
 pub struct MeshResult {
     pub coord: ChunkCoord,
     pub mesh: crate::engine::render::gpu_types::ChunkMeshCpu,
+    pub profile: MeshingBuildProfile,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -99,13 +101,12 @@ impl ChunkMeshingSnapshot {
 }
 
 impl WorldVoxelReader for ChunkMeshingSnapshot {
-    fn get_world_voxel(&self, p: IVec3) -> Voxel {
+    fn get_world_voxel<P: Into<WorldVoxelPos>>(&self, p: P) -> Voxel {
+        let p = p.into();
         let coord = ChunkCoord::from_world_voxel(p);
         let local = coord.local_voxel(p);
 
-        self.chunk_for_coord(coord)
-            .map(|chunk| chunk.get(local.x as usize, local.y as usize, local.z as usize))
-            .unwrap_or(Voxel::AIR)
+        self.chunk_for_coord(coord).map(|chunk| chunk.get_local(local)).unwrap_or(Voxel::AIR)
     }
 }
 
@@ -165,6 +166,7 @@ impl ThreadedMesher {
         };
 
         for entry in world.take_dirty() {
+            world.mark_chunk_meshing_queued(entry.coord);
             if let Some(existing) = self.deferred_dirty.get_mut(&entry.coord) {
                 existing.merge(entry.region);
             } else {
@@ -214,6 +216,7 @@ impl ThreadedMesher {
             let request_id = self.next_request_id;
             self.next_request_id = self.next_request_id.wrapping_add(1).max(1);
             self.pending_jobs.insert(coord, PendingJob { request_id, generation });
+            world.mark_chunk_meshing(coord, generation);
             job_tx
                 .send(MeshJob { request_id, dirty_region, previous_mesh, snapshot })
                 .context("failed to send chunk meshing job to worker thread")?;
@@ -283,7 +286,7 @@ impl ThreadedMesher {
             {
                 self.pending_jobs.remove(&result.coord);
                 self.mesh_caches.insert(result.coord, result.mesh_slices);
-                Some(MeshResult { coord: result.coord, mesh: result.mesh })
+                Some(MeshResult { coord: result.coord, mesh: result.mesh, profile: result.profile })
             }
             _ => None,
         }
@@ -315,8 +318,8 @@ fn worker_loop(
         let _span = crate::profile_span!("mesher::build_chunk_mesh");
         let coord = job.snapshot.coord;
         let generation = job.snapshot.generation;
-        let mesh_slices = if let Some(mut mesh_slices) = job.previous_mesh {
-            rebuild_chunk_mesh_slices(
+        let (mesh_slices, profile) = if let Some(mut mesh_slices) = job.previous_mesh {
+            let profile = rebuild_chunk_mesh_slices(
                 job.dirty_region,
                 coord,
                 &job.snapshot.center,
@@ -324,7 +327,7 @@ fn worker_loop(
                 resolved_blocks.as_ref(),
                 &mut mesh_slices,
             );
-            mesh_slices
+            (mesh_slices, profile)
         } else {
             build_chunk_mesh_slices(
                 coord,
@@ -342,6 +345,7 @@ fn worker_loop(
                 generation,
                 mesh,
                 mesh_slices,
+                profile,
             })
             .is_err()
         {

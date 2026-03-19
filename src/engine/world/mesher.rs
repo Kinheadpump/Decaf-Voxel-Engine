@@ -1,8 +1,5 @@
 use crate::engine::{
-    core::{
-        math::{IVec3, UVec3},
-        types::{CHUNK_SIZE, FaceDir},
-    },
+    core::types::{CHUNK_SIZE, FaceDir},
     render::gpu_types::{ChunkMeshCpu, PackedFace, RenderBucket},
     world::{
         accessor::WorldVoxelReader,
@@ -12,7 +9,7 @@ use crate::engine::{
             tint::BiomeTint,
         },
         chunk::Chunk,
-        coord::ChunkCoord,
+        coord::{ChunkCoord, LocalVoxelPos, WorldVoxelPos},
     },
 };
 
@@ -37,7 +34,7 @@ impl ChunkMeshDirtyRegion {
         region
     }
 
-    pub fn from_local_voxel(local: UVec3) -> Self {
+    pub fn from_local_voxel(local: impl Into<LocalVoxelPos>) -> Self {
         let mut region = Self::default();
         region.mark_local_voxel(local);
         region
@@ -70,11 +67,12 @@ impl ChunkMeshDirtyRegion {
         self.full || (self.slice_masks[dir as usize] & (1u32 << depth)) != 0
     }
 
-    pub fn mark_local_voxel(&mut self, local: UVec3) {
+    pub fn mark_local_voxel(&mut self, local: impl Into<LocalVoxelPos>) {
         if self.full {
             return;
         }
 
+        let local = local.into().as_uvec3();
         self.mark_axis_slices(local.x as usize, FaceDir::NegX, FaceDir::PosX);
         self.mark_axis_slices(local.y as usize, FaceDir::NegY, FaceDir::PosY);
         self.mark_axis_slices(local.z as usize, FaceDir::NegZ, FaceDir::PosZ);
@@ -121,6 +119,9 @@ impl ChunkMeshSlices {
         for bucket in RenderBucket::ALL {
             for dir in 0..6usize {
                 let dst = &mut out.faces[bucket as usize][dir];
+                let total_faces: usize =
+                    self.faces[bucket as usize][dir].iter().map(Vec::len).sum();
+                dst.reserve(total_faces);
                 for depth in 0..CHUNK_SIZE {
                     dst.extend_from_slice(&self.faces[bucket as usize][dir][depth]);
                 }
@@ -130,6 +131,12 @@ impl ChunkMeshSlices {
         out.source_generation = self.source_generation;
         out
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MeshingBuildProfile {
+    pub faces_emitted: u32,
+    pub slice_buffer_growths: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -146,9 +153,9 @@ pub fn build_chunk_mesh_slices(
     chunk: &Chunk,
     accessor: &(impl WorldVoxelReader + ?Sized),
     resolved_blocks: &ResolvedBlockRegistry,
-) -> ChunkMeshSlices {
+) -> (ChunkMeshSlices, MeshingBuildProfile) {
     let mut out = ChunkMeshSlices::new();
-    rebuild_chunk_mesh_slices(
+    let profile = rebuild_chunk_mesh_slices(
         ChunkMeshDirtyRegion::full(),
         coord,
         chunk,
@@ -156,7 +163,7 @@ pub fn build_chunk_mesh_slices(
         resolved_blocks,
         &mut out,
     );
-    out
+    (out, profile)
 }
 
 pub fn rebuild_chunk_mesh_slices(
@@ -166,8 +173,9 @@ pub fn rebuild_chunk_mesh_slices(
     accessor: &(impl WorldVoxelReader + ?Sized),
     resolved_blocks: &ResolvedBlockRegistry,
     out: &mut ChunkMeshSlices,
-) {
+) -> MeshingBuildProfile {
     let chunk_origin = coord.world_origin();
+    let mut profile = MeshingBuildProfile::default();
 
     for dir in FaceDir::ALL {
         for depth in 0..CHUNK_SIZE {
@@ -175,37 +183,51 @@ pub fn rebuild_chunk_mesh_slices(
                 continue;
             }
 
-            let slice_faces =
-                build_direction_slice(chunk_origin, chunk, accessor, resolved_blocks, dir, depth);
-
-            for bucket in RenderBucket::ALL {
-                out.faces[bucket as usize][dir as usize][depth] =
-                    slice_faces[bucket as usize].clone();
-            }
+            let (opaque_buckets, transparent_buckets) = out.faces.split_at_mut(1);
+            let slice_faces = [
+                &mut opaque_buckets[RenderBucket::Opaque as usize][dir as usize][depth],
+                &mut transparent_buckets[0][dir as usize][depth],
+            ];
+            build_direction_slice_into(
+                chunk_origin,
+                chunk,
+                accessor,
+                resolved_blocks,
+                dir,
+                depth,
+                slice_faces,
+                &mut profile,
+            );
         }
     }
 
     out.source_generation = chunk.generation;
+    profile
 }
 
-fn build_direction_slice(
-    chunk_origin: IVec3,
+fn build_direction_slice_into(
+    chunk_origin: WorldVoxelPos,
     chunk: &Chunk,
     accessor: &(impl WorldVoxelReader + ?Sized),
     resolved_blocks: &ResolvedBlockRegistry,
     dir: FaceDir,
     depth: usize,
-) -> [Vec<PackedFace>; 2] {
-    let mut out = std::array::from_fn(|_| Vec::new());
+    mut out: [&mut Vec<PackedFace>; 2],
+    profile: &mut MeshingBuildProfile,
+) {
     let mut mask = [[MaskCell::default(); CHUNK_SIZE]; CHUNK_SIZE];
     let mut used = [[false; CHUNK_SIZE]; CHUNK_SIZE];
+
+    for faces in &mut out {
+        faces.clear();
+    }
 
     for v_index in 0..CHUNK_SIZE {
         for u_index in 0..CHUNK_SIZE {
             used[u_index][v_index] = false;
 
             let local = face_local_xyz(dir, depth, u_index, v_index);
-            let voxel = chunk.get(local.x as usize, local.y as usize, local.z as usize);
+            let voxel = chunk.get_local(local);
             let block_id = voxel.block_id();
             let block = resolved_blocks.get_voxel(voxel);
 
@@ -214,7 +236,7 @@ fn build_direction_slice(
                 continue;
             }
 
-            let world_voxel = chunk_origin + local;
+            let world_voxel = chunk_origin + local.as_ivec3();
             let neighbor_world = world_voxel + dir.normal();
             let neighbor_voxel = accessor.get_world_voxel(neighbor_world);
             let neighbor_id = neighbor_voxel.block_id();
@@ -232,7 +254,7 @@ fn build_direction_slice(
                     } else {
                         RenderBucket::Opaque
                     },
-                    tint: resolve_face_tint(chunk, block, dir, local.x as usize, local.z as usize),
+                    tint: resolve_face_tint(chunk, block, dir, local.x(), local.z()),
                 }
             } else {
                 MaskCell::default()
@@ -297,20 +319,24 @@ fn build_direction_slice(
             let anchor = face_local_xyz(dir, depth, u_index, v_index);
 
             let packed = PackedFace::pack(
-                anchor.x as u32,
-                anchor.y as u32,
-                anchor.z as u32,
+                anchor.as_uvec3().x,
+                anchor.as_uvec3().y,
+                anchor.as_uvec3().z,
                 texture_id as u32,
                 (width as u32) - 1,
                 (height as u32) - 1,
                 cell.tint,
             );
 
-            out[bucket as usize].push(packed);
+            let faces = &mut out[bucket as usize];
+            let previous_capacity = faces.capacity();
+            faces.push(packed);
+            profile.faces_emitted += 1;
+            if faces.capacity() > previous_capacity {
+                profile.slice_buffer_growths += 1;
+            }
         }
     }
-
-    out
 }
 
 fn face_visible_between(
@@ -352,24 +378,32 @@ fn resolve_face_tint(chunk: &Chunk, block: ResolvedBlock, dir: FaceDir, x: usize
     }
 }
 
-fn face_local_xyz(dir: FaceDir, depth: usize, u: usize, v: usize) -> IVec3 {
+fn face_local_xyz(dir: FaceDir, depth: usize, u: usize, v: usize) -> LocalVoxelPos {
     match dir {
-        FaceDir::PosX => IVec3::new(depth as i32, u as i32, v as i32),
-        FaceDir::NegX => IVec3::new(depth as i32, v as i32, u as i32),
-        FaceDir::PosY => IVec3::new(v as i32, depth as i32, u as i32),
-        FaceDir::NegY => IVec3::new(u as i32, depth as i32, v as i32),
-        FaceDir::PosZ => IVec3::new(u as i32, v as i32, depth as i32),
-        FaceDir::NegZ => IVec3::new(v as i32, u as i32, depth as i32),
+        FaceDir::PosX => LocalVoxelPos::new(depth as u32, u as u32, v as u32),
+        FaceDir::NegX => LocalVoxelPos::new(depth as u32, v as u32, u as u32),
+        FaceDir::PosY => LocalVoxelPos::new(v as u32, depth as u32, u as u32),
+        FaceDir::NegY => LocalVoxelPos::new(u as u32, depth as u32, v as u32),
+        FaceDir::PosZ => LocalVoxelPos::new(u as u32, v as u32, depth as u32),
+        FaceDir::NegZ => LocalVoxelPos::new(v as u32, u as u32, depth as u32),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::world::block::{
-        flags::BlockFlags,
-        resolved::ResolvedFaceTextures,
-        tint::{BiomeTint, ResolvedFaceTints},
+    use crate::engine::{
+        render::materials::create_texture_registry,
+        world::{
+            accessor::VoxelAccessor,
+            block::{
+                create_default_block_registry,
+                flags::BlockFlags,
+                resolved::{ResolvedBlockRegistry, ResolvedFaceTextures},
+                tint::{BiomeTint, ResolvedFaceTints},
+            },
+            storage::World,
+        },
     };
 
     fn resolved(id: u16, flags: BlockFlags) -> ResolvedBlock {
@@ -414,7 +448,7 @@ mod tests {
 
     #[test]
     fn dirty_region_marks_adjacent_axis_slices() {
-        let region = ChunkMeshDirtyRegion::from_local_voxel(UVec3::new(5, 7, 9));
+        let region = ChunkMeshDirtyRegion::from_local_voxel(LocalVoxelPos::new(5, 7, 9));
 
         assert!(region.touches(FaceDir::NegX, 5));
         assert!(region.touches(FaceDir::PosX, 5));
@@ -428,8 +462,8 @@ mod tests {
 
     #[test]
     fn dirty_region_merge_preserves_slice_bits() {
-        let mut region = ChunkMeshDirtyRegion::from_local_voxel(UVec3::new(0, 0, 0));
-        region.merge(ChunkMeshDirtyRegion::from_local_voxel(UVec3::new(31, 31, 31)));
+        let mut region = ChunkMeshDirtyRegion::from_local_voxel(LocalVoxelPos::new(0, 0, 0));
+        region.merge(ChunkMeshDirtyRegion::from_local_voxel(LocalVoxelPos::new(31, 31, 31)));
 
         assert!(region.touches(FaceDir::NegX, 0));
         assert!(region.touches(FaceDir::PosX, 0));
@@ -480,5 +514,39 @@ mod tests {
             pack_face_tint(FACE_TINT_MODE_MULTIPLY, [72, 118, 54])
         );
         assert_eq!(resolve_face_tint(&chunk, block, FaceDir::PosY, 3, 5), DEFAULT_FACE_TINT);
+    }
+
+    #[test]
+    fn rebuilding_mesh_slices_reuses_existing_slice_buffers() {
+        let resolved = test_resolved_registry();
+        let coord = ChunkCoord(glam::IVec3::ZERO);
+        let mut chunk = Chunk::new();
+        let mut world = World::new();
+
+        chunk.set(0, 0, 0, crate::engine::world::voxel::Voxel::from_block_id(BlockId(3)));
+        world.insert_chunk(coord, chunk.clone());
+
+        let accessor = VoxelAccessor { world: &world };
+        let (mut mesh_slices, first_profile) =
+            build_chunk_mesh_slices(coord, &chunk, &accessor, &resolved);
+        let second_profile = rebuild_chunk_mesh_slices(
+            ChunkMeshDirtyRegion::full(),
+            coord,
+            &chunk,
+            &accessor,
+            &resolved,
+            &mut mesh_slices,
+        );
+
+        assert!(first_profile.faces_emitted > 0);
+        assert!(first_profile.slice_buffer_growths > 0);
+        assert_eq!(second_profile.faces_emitted, first_profile.faces_emitted);
+        assert_eq!(second_profile.slice_buffer_growths, 0);
+    }
+
+    fn test_resolved_registry() -> ResolvedBlockRegistry {
+        let registry = create_default_block_registry();
+        let textures = create_texture_registry(&registry);
+        ResolvedBlockRegistry::build(&registry, textures.layer_map())
     }
 }

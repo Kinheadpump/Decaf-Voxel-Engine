@@ -2,11 +2,16 @@ use ahash::AHashMap;
 
 use crate::engine::{
     core::{
-        math::{IVec3, UVec3},
+        math::IVec3,
         types::{CHUNK_SIZE, FaceDir},
     },
     world::{
-        block::id::BlockId, chunk::Chunk, coord::ChunkCoord, mesher::ChunkMeshDirtyRegion,
+        block::id::BlockId,
+        chunk::Chunk,
+        coord::{ChunkCoord, LocalVoxelPos, WorldVoxelPos},
+        edit_log::PersistentEditLog,
+        lifecycle::{ChunkLifecycle, ChunkLifecycleTracker},
+        mesher::ChunkMeshDirtyRegion,
         voxel::Voxel,
     },
 };
@@ -17,17 +22,12 @@ pub struct DirtyChunkEntry {
     pub region: ChunkMeshDirtyRegion,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct PersistentBlockEdit {
-    local: UVec3,
-    block_id: BlockId,
-}
-
 pub struct World {
     pub chunks: AHashMap<ChunkCoord, Chunk>,
     dirty_regions: AHashMap<ChunkCoord, ChunkMeshDirtyRegion>,
     dirty_queue: Vec<ChunkCoord>,
-    persistent_edits: AHashMap<ChunkCoord, Vec<PersistentBlockEdit>>,
+    persistent_edits: PersistentEditLog,
+    lifecycle: ChunkLifecycleTracker,
 }
 
 impl World {
@@ -36,7 +36,8 @@ impl World {
             chunks: AHashMap::new(),
             dirty_regions: AHashMap::new(),
             dirty_queue: Vec::new(),
-            persistent_edits: AHashMap::new(),
+            persistent_edits: PersistentEditLog::default(),
+            lifecycle: ChunkLifecycleTracker::default(),
         }
     }
 
@@ -60,6 +61,9 @@ impl World {
     pub fn insert_chunk(&mut self, coord: ChunkCoord, chunk: Chunk) {
         self.chunks.insert(coord, chunk);
         self.apply_persistent_edits(coord);
+        let generation =
+            self.chunks.get(&coord).expect("inserted chunk should still exist").generation;
+        self.lifecycle.insert_generated(coord, generation);
         self.mark_dirty(coord);
         self.mark_adjacent_chunk_borders_dirty(coord);
     }
@@ -72,44 +76,68 @@ impl World {
         self.dirty_regions.remove(&coord);
         self.dirty_queue.retain(|queued| *queued != coord);
         let removed = self.chunks.remove(&coord)?;
+        self.lifecycle.remove(coord);
         self.mark_adjacent_chunk_borders_dirty(coord);
         Some(removed)
     }
 
-    pub fn set_block_world(&mut self, p: IVec3, block_id: BlockId) -> bool {
+    pub fn set_block_world(&mut self, p: impl Into<WorldVoxelPos>, block_id: BlockId) -> bool {
         self.set_voxel_world(p, Voxel::from_block_id(block_id))
     }
 
-    pub fn load_persistent_edit_world(&mut self, p: IVec3, block_id: BlockId) {
-        let coord = ChunkCoord::from_world_voxel(p);
-        self.record_persistent_edit(coord, coord.local_voxel(p), block_id);
+    pub fn load_persistent_edit_world(&mut self, p: impl Into<WorldVoxelPos>, block_id: BlockId) {
+        self.persistent_edits.record_world(p, block_id);
     }
 
-    pub fn iter_persistent_edits(&self) -> impl Iterator<Item = (IVec3, BlockId)> + '_ {
-        self.persistent_edits.iter().flat_map(|(coord, edits)| {
-            let origin = coord.world_origin();
-            edits.iter().map(move |edit| (origin + edit.local.as_ivec3(), edit.block_id))
-        })
+    pub fn iter_persistent_edits(&self) -> impl Iterator<Item = (WorldVoxelPos, BlockId)> + '_ {
+        self.persistent_edits.iter_world()
     }
 
-    fn set_voxel_world(&mut self, p: IVec3, voxel: Voxel) -> bool {
+    pub fn chunk_lifecycle(&self, coord: ChunkCoord) -> Option<ChunkLifecycle> {
+        self.lifecycle.get(coord)
+    }
+
+    pub fn mark_chunk_meshing_queued(&mut self, coord: ChunkCoord) {
+        let Some(chunk) = self.chunks.get(&coord) else {
+            return;
+        };
+        self.lifecycle.mark_queued(coord, chunk.generation);
+    }
+
+    pub fn mark_chunk_meshing(&mut self, coord: ChunkCoord, generation: u32) {
+        self.lifecycle.mark_meshing(coord, generation);
+    }
+
+    pub fn mark_chunk_meshed(&mut self, coord: ChunkCoord, generation: u32) {
+        self.lifecycle.mark_meshed(coord, generation);
+    }
+
+    pub fn mark_chunk_uploaded(&mut self, coord: ChunkCoord, generation: u32) {
+        self.lifecycle.mark_uploaded(coord, generation);
+    }
+
+    fn set_voxel_world(&mut self, p: impl Into<WorldVoxelPos>, voxel: Voxel) -> bool {
+        let p = p.into();
         let coord = ChunkCoord::from_world_voxel(p);
         let local = coord.local_voxel(p);
+        let generation;
 
         {
             let Some(chunk) = self.chunks.get_mut(&coord) else {
                 return false;
             };
 
-            let current = chunk.get(local.x as usize, local.y as usize, local.z as usize);
+            let current = chunk.get_local(local);
             if current == voxel {
                 return false;
             }
 
-            chunk.set(local.x as usize, local.y as usize, local.z as usize, voxel);
+            chunk.set_local(local, voxel);
+            generation = chunk.generation;
         }
 
-        self.record_persistent_edit(coord, local, voxel.block_id());
+        self.persistent_edits.record_world(p, voxel.block_id());
+        self.lifecycle.mark_dirty(coord, generation);
         self.mark_dirty_region(coord, ChunkMeshDirtyRegion::from_local_voxel(local));
         self.mark_border_neighbors_dirty(coord, local);
         true
@@ -128,9 +156,9 @@ impl World {
         dirty
     }
 
-    fn mark_border_neighbors_dirty(&mut self, coord: ChunkCoord, local: UVec3) {
+    fn mark_border_neighbors_dirty(&mut self, coord: ChunkCoord, local: LocalVoxelPos) {
         let edge = (CHUNK_SIZE - 1) as u32;
-        let mark_if_loaded = |delta: IVec3, neighbor_local: UVec3, world: &mut Self| {
+        let mark_if_loaded = |delta: IVec3, neighbor_local: LocalVoxelPos, world: &mut Self| {
             let neighbor = coord.offset(delta);
             if world.chunks.contains_key(&neighbor) {
                 world.mark_dirty_region(
@@ -140,23 +168,25 @@ impl World {
             }
         };
 
+        let local = local.as_uvec3();
+
         if local.x == 0 {
-            mark_if_loaded(IVec3::new(-1, 0, 0), UVec3::new(edge, local.y, local.z), self);
+            mark_if_loaded(IVec3::new(-1, 0, 0), LocalVoxelPos::new(edge, local.y, local.z), self);
         }
         if local.x as usize == CHUNK_SIZE - 1 {
-            mark_if_loaded(IVec3::new(1, 0, 0), UVec3::new(0, local.y, local.z), self);
+            mark_if_loaded(IVec3::new(1, 0, 0), LocalVoxelPos::new(0, local.y, local.z), self);
         }
         if local.y == 0 {
-            mark_if_loaded(IVec3::new(0, -1, 0), UVec3::new(local.x, edge, local.z), self);
+            mark_if_loaded(IVec3::new(0, -1, 0), LocalVoxelPos::new(local.x, edge, local.z), self);
         }
         if local.y as usize == CHUNK_SIZE - 1 {
-            mark_if_loaded(IVec3::new(0, 1, 0), UVec3::new(local.x, 0, local.z), self);
+            mark_if_loaded(IVec3::new(0, 1, 0), LocalVoxelPos::new(local.x, 0, local.z), self);
         }
         if local.z == 0 {
-            mark_if_loaded(IVec3::new(0, 0, -1), UVec3::new(local.x, local.y, edge), self);
+            mark_if_loaded(IVec3::new(0, 0, -1), LocalVoxelPos::new(local.x, local.y, edge), self);
         }
         if local.z as usize == CHUNK_SIZE - 1 {
-            mark_if_loaded(IVec3::new(0, 0, 1), UVec3::new(local.x, local.y, 0), self);
+            mark_if_loaded(IVec3::new(0, 0, 1), LocalVoxelPos::new(local.x, local.y, 0), self);
         }
     }
 
@@ -182,31 +212,11 @@ impl World {
         }
     }
 
-    fn record_persistent_edit(&mut self, coord: ChunkCoord, local: UVec3, block_id: BlockId) {
-        let edits = self.persistent_edits.entry(coord).or_default();
-        if let Some(existing) = edits.iter_mut().find(|edit| edit.local == local) {
-            existing.block_id = block_id;
-        } else {
-            edits.push(PersistentBlockEdit { local, block_id });
-        }
-    }
-
     fn apply_persistent_edits(&mut self, coord: ChunkCoord) {
-        let Some(edits) = self.persistent_edits.get(&coord) else {
-            return;
-        };
         let Some(chunk) = self.chunks.get_mut(&coord) else {
             return;
         };
-
-        for edit in edits {
-            chunk.set(
-                edit.local.x as usize,
-                edit.local.y as usize,
-                edit.local.z as usize,
-                Voxel::from_block_id(edit.block_id),
-            );
-        }
+        self.persistent_edits.apply_to_chunk(coord, chunk);
     }
 }
 
@@ -332,5 +342,16 @@ mod tests {
 
         let chunk = world.chunks.get(&coord).expect("chunk should exist");
         assert_eq!(chunk.get(1, 2, 3), Voxel::from_block_id(BlockId(9)));
+    }
+
+    #[test]
+    fn inserted_chunks_start_dirty_in_lifecycle_tracker() {
+        let mut world = World::new();
+        let coord = ChunkCoord(IVec3::ZERO);
+
+        world.insert_chunk(coord, Chunk::new());
+
+        let lifecycle = world.chunk_lifecycle(coord).expect("chunk lifecycle should exist");
+        assert_eq!(lifecycle.mesh_state, crate::engine::world::lifecycle::ChunkMeshState::Dirty);
     }
 }

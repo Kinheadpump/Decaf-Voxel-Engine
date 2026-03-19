@@ -235,8 +235,7 @@ mod tests {
         fn generate(&self, _coord: ChunkCoord, chunk: &mut Chunk) {
             let voxel = Voxel::from_block_id(self.fill_block);
             chunk.voxels.fill(voxel);
-            chunk.dirty = true;
-            chunk.generation = chunk.generation.wrapping_add(1);
+            chunk.bump_generation();
         }
     }
 

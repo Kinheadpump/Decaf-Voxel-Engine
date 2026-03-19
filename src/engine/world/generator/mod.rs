@@ -137,7 +137,7 @@ impl StagedGenerator {
         chunk: &mut Chunk,
         scratch: &mut StagedGeneratorScratch,
     ) {
-        let origin = coord.world_origin();
+        let origin = coord.world_origin().as_ivec3();
         let (columns, solid_mask) = scratch.buffers_mut();
         self.prepare_columns(origin.x, origin.z, columns);
         self.populate_solid_mask(origin.x, origin.y, origin.z, columns, solid_mask);
@@ -200,8 +200,7 @@ impl StagedGenerator {
             }
         }
 
-        chunk.dirty = true;
-        chunk.generation = chunk.generation.wrapping_add(1);
+        chunk.bump_generation();
     }
 
     fn prepare_columns(&self, origin_x: i32, origin_z: i32, columns: &mut [ColumnSample]) {

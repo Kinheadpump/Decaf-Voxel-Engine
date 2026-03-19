@@ -1,3 +1,4 @@
+mod chunks;
 mod draw;
 mod mesh_upload;
 mod overlay;
@@ -22,10 +23,10 @@ use crate::{
             hiz::HiZOcclusion,
             materials::{Materials, TextureRegistry},
             mesh_pool::{ChunkGpuEntry, MeshPool},
-            meshing::{MeshingFocus, ThreadedMesher},
+            meshing::ThreadedMesher,
             targets::DepthTarget,
         },
-        world::{block::resolved::ResolvedBlockRegistry, coord::ChunkCoord, storage::World},
+        world::{block::resolved::ResolvedBlockRegistry, coord::ChunkCoord},
     },
 };
 
@@ -88,6 +89,8 @@ pub struct Renderer {
     overlay_config: OverlayConfig,
     clear_color: ClearColorConfig,
     sky_enabled: bool,
+    meshing_last_faces_uploaded: u32,
+    meshing_last_slice_buffer_growths: u32,
     opaque_draw_scratch: Vec<DrawMeta>,
     transparent_draw_scratch: Vec<(f32, DrawMeta)>,
     staged_draw_scratch: Vec<DrawMeta>,
@@ -607,6 +610,8 @@ impl Renderer {
             overlay_config: render_config.overlay,
             clear_color: render_config.clear_color,
             sky_enabled: render_config.sky.enabled,
+            meshing_last_faces_uploaded: 0,
+            meshing_last_slice_buffer_growths: 0,
             opaque_draw_scratch: Vec::new(),
             transparent_draw_scratch: Vec::new(),
             staged_draw_scratch: Vec::new(),
@@ -642,41 +647,6 @@ impl Renderer {
                 self.surface_config.width,
                 self.surface_config.height,
             );
-        }
-    }
-
-    pub fn pump_meshing(&mut self, world: &mut World, focus: MeshingFocus) -> anyhow::Result<()> {
-        let _span = crate::profile_span!("renderer::pump_meshing");
-
-        for result in self.mesher.try_take_ready_limit(self.mesh_upload_budget) {
-            self.upload_chunk_mesh(result.coord, result.mesh)?;
-        }
-        self.mesher.enqueue_dirty(world, focus, self.meshing_enqueue_budget)?;
-
-        Ok(())
-    }
-
-    pub fn finish_meshing(&mut self, world: &mut World, focus: MeshingFocus) -> anyhow::Result<()> {
-        let _span = crate::profile_span!("renderer::finish_meshing");
-
-        self.mesher.enqueue_dirty(world, focus, 0)?;
-
-        while self.mesher.has_pending_work() {
-            if self.mesher.has_inflight_jobs() {
-                let result = self.mesher.recv_ready()?;
-                self.upload_chunk_mesh(result.coord, result.mesh)?;
-            }
-            self.mesher.enqueue_dirty(world, focus, 0)?;
-        }
-
-        Ok(())
-    }
-
-    pub fn remove_chunk_mesh(&mut self, coord: ChunkCoord) {
-        self.mesher.cancel(coord);
-
-        if let Some(entry) = self.gpu_entries.remove(&coord) {
-            self.free_gpu_entry(&entry);
         }
     }
 
@@ -720,6 +690,7 @@ impl Renderer {
         let mut occlusion_culled_chunks = 0u32;
         for (&coord, entry) in &self.gpu_entries {
             let origin = coord.world_origin();
+            let origin_i = origin.as_ivec3();
             let min = origin.as_vec3();
             let max = (origin + glam::IVec3::splat(CHUNK_SIZE_I32)).as_vec3();
 
@@ -742,7 +713,7 @@ impl Renderer {
                     && slice.count > 0
                 {
                     opaque_draws.push(DrawMeta {
-                        chunk_origin: [origin.x, origin.y, origin.z, 0],
+                        chunk_origin: [origin_i.x, origin_i.y, origin_i.z, 0],
                         face_dir: dir as u32,
                         face_offset: slice.offset,
                         face_count: slice.count,
@@ -757,7 +728,7 @@ impl Renderer {
                     transparent_draws.push((
                         distance_sq,
                         DrawMeta {
-                            chunk_origin: [origin.x, origin.y, origin.z, 0],
+                            chunk_origin: [origin_i.x, origin_i.y, origin_i.z, 0],
                             face_dir: dir as u32,
                             face_offset: slice.offset,
                             face_count: slice.count,
@@ -822,6 +793,8 @@ impl Renderer {
             opaque_draws: opaque_count as u32,
             transparent_draws: (staged_draws.len() - opaque_count) as u32,
             meshing_pending_chunks: self.mesher.pending_count() as u32,
+            meshing_faces_uploaded: self.meshing_last_faces_uploaded,
+            meshing_slice_buffer_growths: self.meshing_last_slice_buffer_growths,
             hiz_enabled: self.hiz_occlusion.is_some(),
         };
         self.last_frame_stats = current_stats;

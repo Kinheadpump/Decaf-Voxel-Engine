@@ -1,6 +1,6 @@
 use crate::engine::{
     core::types::{CHUNK_SIZE, CHUNK_VOLUME},
-    world::voxel::Voxel,
+    world::{coord::LocalVoxelPos, voxel::Voxel},
 };
 
 pub const CHUNK_COLUMN_COUNT: usize = CHUNK_SIZE * CHUNK_SIZE;
@@ -8,11 +8,16 @@ pub const DEFAULT_BIOME_TINT: [u8; 3] = [255, 255, 255];
 
 #[inline]
 pub fn voxel_index(x: usize, y: usize, z: usize) -> usize {
+    debug_assert!(x < CHUNK_SIZE);
+    debug_assert!(y < CHUNK_SIZE);
+    debug_assert!(z < CHUNK_SIZE);
     x + z * CHUNK_SIZE + y * CHUNK_SIZE * CHUNK_SIZE
 }
 
 #[inline]
 pub fn column_index(x: usize, z: usize) -> usize {
+    debug_assert!(x < CHUNK_SIZE);
+    debug_assert!(z < CHUNK_SIZE);
     x + z * CHUNK_SIZE
 }
 
@@ -32,7 +37,6 @@ impl Default for ColumnBiomeTints {
 pub struct Chunk {
     pub voxels: Box<[Voxel; CHUNK_VOLUME]>,
     pub column_biome_tints: Box<[ColumnBiomeTints; CHUNK_COLUMN_COUNT]>,
-    pub dirty: bool,
     pub generation: u32,
 }
 
@@ -41,7 +45,6 @@ impl Chunk {
         Self {
             voxels: Box::new([Voxel::AIR; CHUNK_VOLUME]),
             column_biome_tints: Box::new([ColumnBiomeTints::default(); CHUNK_COLUMN_COUNT]),
-            dirty: true,
             generation: 0,
         }
     }
@@ -54,7 +57,27 @@ impl Chunk {
     #[inline]
     pub fn set(&mut self, x: usize, y: usize, z: usize, voxel: Voxel) {
         self.voxels[voxel_index(x, y, z)] = voxel;
-        self.dirty = true;
+        self.generation = self.generation.wrapping_add(1);
+    }
+
+    /// Reads a voxel using a chunk-local position that is already known to be
+    /// within `0..CHUNK_SIZE` on each axis.
+    #[inline]
+    pub fn get_local(&self, local: impl Into<LocalVoxelPos>) -> Voxel {
+        let local = local.into();
+        self.get(local.x(), local.y(), local.z())
+    }
+
+    /// Writes a voxel using a chunk-local position that is already known to be
+    /// within `0..CHUNK_SIZE` on each axis.
+    #[inline]
+    pub fn set_local(&mut self, local: impl Into<LocalVoxelPos>, voxel: Voxel) {
+        let local = local.into();
+        self.set(local.x(), local.y(), local.z(), voxel);
+    }
+
+    #[inline]
+    pub fn bump_generation(&mut self) {
         self.generation = self.generation.wrapping_add(1);
     }
 

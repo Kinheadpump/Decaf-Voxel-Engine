@@ -1,6 +1,8 @@
-use crate::engine::{core::types::CHUNK_SIZE_I32, render::gpu_types::DrawRef};
+use crate::engine::{
+    core::types::CHUNK_SIZE_I32, render::gpu_types::DrawRef, world::coord::WorldVoxelPos,
+};
 
-pub(super) fn transparent_batch_center(origin: glam::IVec3, face_dir: u32) -> glam::Vec3 {
+pub(super) fn transparent_batch_center(origin: WorldVoxelPos, face_dir: u32) -> glam::Vec3 {
     let min = origin.as_vec3();
     let half = CHUNK_SIZE_I32 as f32 * 0.5;
     let center = min + glam::Vec3::splat(half);

@@ -31,12 +31,12 @@ impl PackedFace {
         height_minus_one: u32,
         tint: u32,
     ) -> Self {
-        debug_assert!(x < 32);
-        debug_assert!(y < 32);
-        debug_assert!(z < 32);
+        debug_assert!(x < CHUNK_SIZE_U32);
+        debug_assert!(y < CHUNK_SIZE_U32);
+        debug_assert!(z < CHUNK_SIZE_U32);
         debug_assert!(texture_id < MAX_TEXTURE_LAYERS);
-        debug_assert!(width_minus_one < 32);
-        debug_assert!(height_minus_one < 32);
+        debug_assert!(width_minus_one < CHUNK_SIZE_U32);
+        debug_assert!(height_minus_one < CHUNK_SIZE_U32);
 
         Self {
             value: x
@@ -318,6 +318,8 @@ pub struct RenderStats {
     pub opaque_draws: u32,
     pub transparent_draws: u32,
     pub meshing_pending_chunks: u32,
+    pub meshing_faces_uploaded: u32,
+    pub meshing_slice_buffer_growths: u32,
     pub hiz_enabled: bool,
 }
 

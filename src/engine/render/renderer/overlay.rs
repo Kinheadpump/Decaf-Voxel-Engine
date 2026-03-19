@@ -75,6 +75,8 @@ impl Renderer {
             format!("GPU        {}", stats.gpu_chunks),
             format!("DRAWN      {}", stats.drawn_chunks),
             format!("MESH       {}", stats.meshing_pending_chunks),
+            format!("MESH FACE  {}", stats.meshing_faces_uploaded),
+            format!("MESH GROW  {}", stats.meshing_slice_buffer_growths),
             String::new(),
             "RENDER".to_string(),
             format!("FRUSTUM    {}", stats.frustum_culled_chunks),

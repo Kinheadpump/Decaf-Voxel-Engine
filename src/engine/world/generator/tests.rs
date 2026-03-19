@@ -382,10 +382,7 @@ fn submerged_surface_uses_biome_ocean_floor_block() {
     generator.generate(coord, &mut chunk);
 
     let top_local = coord.local_voxel(IVec3::new(world_x, top, world_z));
-    assert_eq!(
-        chunk.get(top_local.x as usize, top_local.y as usize, top_local.z as usize).block_id(),
-        BlockId(8)
-    );
+    assert_eq!(chunk.get_local(top_local).block_id(), BlockId(8));
 }
 
 #[test]
@@ -413,10 +410,7 @@ fn shoreline_surface_without_water_above_keeps_biome_surface_block() {
     generator.generate(coord, &mut chunk);
 
     let top_local = coord.local_voxel(IVec3::new(world_x, top, world_z));
-    assert_eq!(
-        chunk.get(top_local.x as usize, top_local.y as usize, top_local.z as usize).block_id(),
-        BlockId(1)
-    );
+    assert_eq!(chunk.get_local(top_local).block_id(), BlockId(1));
 }
 
 #[test]
@@ -435,28 +429,10 @@ fn staged_generator_uses_biome_surface_then_two_filler_layers_then_deep_block() 
     let dirt_two_local = coord.local_voxel(IVec3::new(world_x, top - 2, world_z));
     let stone_local = coord.local_voxel(IVec3::new(world_x, top - 3, world_z));
 
-    assert_eq!(
-        chunk.get(top_local.x as usize, top_local.y as usize, top_local.z as usize).block_id(),
-        BlockId(1)
-    );
-    assert_eq!(
-        chunk
-            .get(dirt_one_local.x as usize, dirt_one_local.y as usize, dirt_one_local.z as usize,)
-            .block_id(),
-        BlockId(2)
-    );
-    assert_eq!(
-        chunk
-            .get(dirt_two_local.x as usize, dirt_two_local.y as usize, dirt_two_local.z as usize,)
-            .block_id(),
-        BlockId(2)
-    );
-    assert_eq!(
-        chunk
-            .get(stone_local.x as usize, stone_local.y as usize, stone_local.z as usize)
-            .block_id(),
-        BlockId(3)
-    );
+    assert_eq!(chunk.get_local(top_local).block_id(), BlockId(1));
+    assert_eq!(chunk.get_local(dirt_one_local).block_id(), BlockId(2));
+    assert_eq!(chunk.get_local(dirt_two_local).block_id(), BlockId(2));
+    assert_eq!(chunk.get_local(stone_local).block_id(), BlockId(3));
 }
 
 fn flat_land_regions(base_height: f32) -> ContinentalRegionsConfig {
