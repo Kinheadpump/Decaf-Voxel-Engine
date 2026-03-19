@@ -4,10 +4,12 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process,
+    thread::{self, JoinHandle},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::Context;
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, bounded, unbounded};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -15,12 +17,14 @@ use crate::{
     engine::world::{
         block::{id::BlockId, registry::BlockRegistry},
         coord::WorldVoxelPos,
+        edit_log::PersistentEditLog,
         storage::World,
     },
 };
 
 const WORLD_SAVE_VERSION: u32 = 2;
 const WORLD_SAVE_KIND: &str = "decaf_world";
+const DEFAULT_ASYNC_SAVE_DEBOUNCE_MS: u64 = 125;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorldSaveContext {
@@ -31,6 +35,106 @@ pub struct WorldSaveContext {
 impl WorldSaveContext {
     pub fn from_world_config(world: &WorldConfig) -> Self {
         Self { seed: world.seed, biomes_file: world.biomes_file.clone() }
+    }
+}
+
+pub struct AsyncWorldSaver {
+    tx: Option<Sender<SaveCommand>>,
+    worker: Option<JoinHandle<()>>,
+}
+
+enum SaveCommand {
+    Record(WorldVoxelPos, BlockId),
+    Flush(Sender<anyhow::Result<()>>),
+    Shutdown(Sender<anyhow::Result<()>>),
+}
+
+impl AsyncWorldSaver {
+    pub fn new(
+        path: PathBuf,
+        context: WorldSaveContext,
+        block_registry: &BlockRegistry,
+        initial_edits: impl IntoIterator<Item = (WorldVoxelPos, BlockId)>,
+    ) -> anyhow::Result<Self> {
+        Self::with_debounce(
+            path,
+            context,
+            block_registry,
+            initial_edits,
+            std::time::Duration::from_millis(DEFAULT_ASYNC_SAVE_DEBOUNCE_MS),
+        )
+    }
+
+    fn with_debounce(
+        path: PathBuf,
+        context: WorldSaveContext,
+        block_registry: &BlockRegistry,
+        initial_edits: impl IntoIterator<Item = (WorldVoxelPos, BlockId)>,
+        debounce: std::time::Duration,
+    ) -> anyhow::Result<Self> {
+        let (tx, rx) = unbounded();
+        let initial_edits: Vec<_> = initial_edits.into_iter().collect();
+        let block_registry = block_registry.clone();
+        let worker = thread::Builder::new()
+            .name("world-save".to_string())
+            .spawn(move || {
+                world_save_worker_loop(rx, path, context, block_registry, initial_edits, debounce)
+            })
+            .context("failed to spawn world save worker thread")?;
+
+        Ok(Self { tx: Some(tx), worker: Some(worker) })
+    }
+
+    pub fn record_edit(
+        &self,
+        position: impl Into<WorldVoxelPos>,
+        block_id: BlockId,
+    ) -> anyhow::Result<()> {
+        let Some(tx) = self.tx.as_ref() else {
+            anyhow::bail!("world save worker is unavailable");
+        };
+        tx.send(SaveCommand::Record(position.into(), block_id))
+            .map_err(|_| anyhow::anyhow!("world save worker has shut down"))?;
+        Ok(())
+    }
+
+    pub fn flush(&self) -> anyhow::Result<()> {
+        let Some(tx) = self.tx.as_ref() else {
+            return Ok(());
+        };
+        let (reply_tx, reply_rx) = bounded(1);
+        tx.send(SaveCommand::Flush(reply_tx))
+            .map_err(|_| anyhow::anyhow!("world save worker has shut down"))?;
+        reply_rx.recv().map_err(|_| anyhow::anyhow!("world save worker did not reply"))?
+    }
+
+    fn shutdown(&mut self) -> anyhow::Result<()> {
+        let Some(tx) = self.tx.take() else {
+            if let Some(worker) = self.worker.take() {
+                worker.join().map_err(|_| anyhow::anyhow!("world save worker panicked"))?;
+            }
+            return Ok(());
+        };
+
+        let (reply_tx, reply_rx) = bounded(1);
+        tx.send(SaveCommand::Shutdown(reply_tx))
+            .map_err(|_| anyhow::anyhow!("world save worker has shut down"))?;
+        let result =
+            reply_rx.recv().map_err(|_| anyhow::anyhow!("world save worker did not reply"))?;
+
+        if let Some(worker) = self.worker.take() {
+            worker.join().map_err(|_| anyhow::anyhow!("world save worker panicked"))?;
+        }
+
+        result
+    }
+}
+
+impl Drop for AsyncWorldSaver {
+    fn drop(&mut self) {
+        if let Err(err) = self.shutdown() {
+            crate::log_warn!("failed to flush world save worker during shutdown: {err:#}");
+        }
     }
 }
 
@@ -126,12 +230,30 @@ pub fn save_block_edits(
     world: &World,
     block_registry: &BlockRegistry,
 ) -> anyhow::Result<()> {
-    let mut edits = Vec::new();
-    for (position, block_id) in world.iter_persistent_edits() {
+    save_edit_entries(path, context, world.iter_persistent_edits(), block_registry)
+}
+
+fn save_edit_log(
+    path: &Path,
+    context: &WorldSaveContext,
+    edits: &PersistentEditLog,
+    block_registry: &BlockRegistry,
+) -> anyhow::Result<()> {
+    save_edit_entries(path, context, edits.iter_world(), block_registry)
+}
+
+fn save_edit_entries(
+    path: &Path,
+    context: &WorldSaveContext,
+    edits: impl Iterator<Item = (WorldVoxelPos, BlockId)>,
+    block_registry: &BlockRegistry,
+) -> anyhow::Result<()> {
+    let mut saved_edits: Vec<SavedBlockEdit> = Vec::new();
+    for (position, block_id) in edits {
         let block = block_registry
             .get(block_id)
             .with_context(|| format!("block id {} is not registered", block_id.0))?;
-        edits.push(SavedBlockEdit {
+        saved_edits.push(SavedBlockEdit {
             x: position.as_ivec3().x,
             y: position.as_ivec3().y,
             z: position.as_ivec3().z,
@@ -139,7 +261,7 @@ pub fn save_block_edits(
         });
     }
 
-    edits.sort_by(|a, b| (a.x, a.y, a.z, &a.block).cmp(&(b.x, b.y, b.z, &b.block)));
+    saved_edits.sort_by(|a, b| (a.x, a.y, a.z, &a.block).cmp(&(b.x, b.y, b.z, &b.block)));
 
     if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
         fs::create_dir_all(parent)
@@ -148,8 +270,12 @@ pub fn save_block_edits(
 
     let metadata = build_save_metadata(path, context, block_registry);
     let contents =
-        toml::to_string_pretty(&WorldSaveFile { version: WORLD_SAVE_VERSION, metadata, edits })
-            .context("failed to encode world save")?;
+        toml::to_string_pretty(&WorldSaveFile {
+            version: WORLD_SAVE_VERSION,
+            metadata,
+            edits: saved_edits,
+        })
+        .context("failed to encode world save")?;
     write_world_save_atomically(path, &contents, block_registry)?;
     Ok(())
 }
@@ -421,9 +547,87 @@ fn unix_timestamp_millis() -> u64 {
         .unwrap_or(u64::MAX)
 }
 
+fn world_save_worker_loop(
+    rx: Receiver<SaveCommand>,
+    path: PathBuf,
+    context: WorldSaveContext,
+    block_registry: BlockRegistry,
+    initial_edits: Vec<(WorldVoxelPos, BlockId)>,
+    debounce: std::time::Duration,
+) {
+    let mut edits = PersistentEditLog::default();
+    for (position, block_id) in initial_edits {
+        edits.record_world(position, block_id);
+    }
+
+    let mut dirty = false;
+
+    loop {
+        let command = if dirty {
+            match rx.recv_timeout(debounce) {
+                Ok(command) => Some(command),
+                Err(RecvTimeoutError::Timeout) => None,
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+        } else {
+            match rx.recv() {
+                Ok(command) => Some(command),
+                Err(_) => break,
+            }
+        };
+
+        match command {
+            Some(SaveCommand::Record(position, block_id)) => {
+                edits.record_world(position, block_id);
+                dirty = true;
+            }
+            Some(SaveCommand::Flush(reply_tx)) => {
+                let result = if dirty {
+                    save_edit_log(&path, &context, &edits, &block_registry)
+                } else {
+                    Ok(())
+                };
+                if result.is_ok() {
+                    dirty = false;
+                }
+                let _ = reply_tx.send(result);
+            }
+            Some(SaveCommand::Shutdown(reply_tx)) => {
+                let result = if dirty {
+                    save_edit_log(&path, &context, &edits, &block_registry)
+                } else {
+                    Ok(())
+                };
+                let _ = reply_tx.send(result);
+                return;
+            }
+            None => match save_edit_log(&path, &context, &edits, &block_registry) {
+                Ok(()) => {
+                    dirty = false;
+                }
+                Err(err) => {
+                    crate::log_warn!(
+                        "failed to autosave world edits to {}: {err:#}",
+                        path.display()
+                    );
+                }
+            },
+        }
+    }
+
+    if dirty
+        && let Err(err) = save_edit_log(&path, &context, &edits, &block_registry)
+    {
+        crate::log_warn!(
+            "failed to flush world edits during save worker shutdown to {}: {err:#}",
+            path.display()
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::process;
+    use std::{process, time::Duration};
 
     use crate::engine::core::math::IVec3;
     use crate::engine::world::{
@@ -552,6 +756,34 @@ block = "stone"
             vec![(WorldVoxelPos::new(2, 3, 4), stone), (WorldVoxelPos::new(5, 6, 7), oak),]
         );
         assert_eq!(backup_edits, vec![(WorldVoxelPos::new(2, 3, 4), stone)]);
+
+        cleanup_save_family(&save_path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn async_world_saver_flushes_latest_edit_without_blocking_callers() -> anyhow::Result<()> {
+        let registry = create_default_block_registry();
+        let stone = registry.must_get_id("stone");
+        let oak = registry.must_get_id("oak_planks");
+        let save_path = unique_test_save_path();
+        let save_context = test_save_context();
+
+        {
+            let saver = AsyncWorldSaver::with_debounce(
+                save_path.clone(),
+                save_context.clone(),
+                &registry,
+                Vec::new(),
+                Duration::from_millis(5),
+            )?;
+            saver.record_edit(WorldVoxelPos::new(2, 3, 4), stone)?;
+            saver.record_edit(WorldVoxelPos::new(2, 3, 4), oak)?;
+            saver.flush()?;
+        }
+
+        let edits = load_block_edits(&save_path, &save_context, &registry)?;
+        assert_eq!(edits, vec![(WorldVoxelPos::new(2, 3, 4), oak)]);
 
         cleanup_save_family(&save_path)?;
         Ok(())

@@ -12,7 +12,11 @@ use crate::{
     engine::{
         input::InputState,
         player::{
-            interaction::{place_block_in_front, remove_block_in_front},
+            editing::{HOTBAR_SLOT_COUNT, PlayerEditState},
+            interaction::{
+                PlaceBlockOutcome, RemoveBlockOutcome, place_block_in_front_detailed,
+                preview_block_in_front, remove_block_in_front_detailed,
+            },
             physics::update_player,
             state::{Player, camera_from_player},
         },
@@ -56,12 +60,12 @@ pub(super) struct AppRuntime {
     world: World,
     block_registry: BlockRegistry,
     save_file: PathBuf,
-    save_context: persistence::WorldSaveContext,
+    world_saver: persistence::AsyncWorldSaver,
+    edit_state: PlayerEditState,
     input: InputState,
     total_time: f32,
     fps_counter: FpsCounter,
     show_debug_overlay: bool,
-    placement_block_id: BlockId,
     water_block_id: BlockId,
 }
 
@@ -86,8 +90,8 @@ impl AppRuntime {
             resolve_background_worker_counts(&render_config);
 
         let block_registry = create_default_block_registry();
-        let placement_block_id = block_registry.must_get_id("stone");
         let water_block_id = block_registry.must_get_id("water");
+        let edit_state = PlayerEditState::new(default_hotbar_slots(&block_registry));
         let texture_registry = create_texture_registry(&block_registry);
         let resolved_blocks =
             ResolvedBlockRegistry::build(&block_registry, texture_registry.layer_map());
@@ -118,6 +122,12 @@ impl AppRuntime {
         let mut world = World::new();
         let persistent_edits =
             persistence::load_block_edits(&save_file, &save_context, &block_registry)?;
+        let world_saver = persistence::AsyncWorldSaver::new(
+            save_file.clone(),
+            save_context.clone(),
+            &block_registry,
+            persistent_edits.clone(),
+        )?;
         for (position, block_id) in persistent_edits.iter().copied() {
             world.load_persistent_edit_world(position, block_id);
         }
@@ -161,12 +171,12 @@ impl AppRuntime {
             world,
             block_registry,
             save_file,
-            save_context,
+            world_saver,
+            edit_state,
             input: InputState::new(),
             total_time: 0.0,
             fps_counter: FpsCounter::new(),
             show_debug_overlay: false,
-            placement_block_id,
             water_block_id,
         })
     }
@@ -181,6 +191,7 @@ impl AppRuntime {
 
     pub(super) fn begin_frame(&mut self) {
         self.input.begin_frame();
+        self.edit_state.tick(self.input.dt);
         self.total_time += self.input.dt;
         self.fps_counter.sample(self.input.dt);
     }
@@ -196,7 +207,15 @@ impl AppRuntime {
         event_loop_target: &EventLoopWindowTarget<()>,
     ) {
         match &event {
-            WindowEvent::CloseRequested => event_loop_target.exit(),
+            WindowEvent::CloseRequested => {
+                if let Err(err) = self.flush_pending_world_saves() {
+                    crate::log_warn!(
+                        "failed to flush world edits to {} before exit: {err:#}",
+                        self.save_file.display()
+                    );
+                }
+                event_loop_target.exit();
+            }
             WindowEvent::Resized(size) => {
                 self.renderer.resize(size.width.max(1), size.height.max(1));
             }
@@ -255,6 +274,19 @@ impl AppRuntime {
             window.request_redraw();
         }
 
+        let debug_modifier =
+            self.input.key_held(KeyCode::ShiftLeft) || self.input.key_held(KeyCode::ShiftRight);
+
+        if self.input.cursor_grabbed && !debug_modifier {
+            for (slot, key) in hotbar_digit_keys().into_iter().enumerate() {
+                if self.input.key_pressed(key)
+                    && self.edit_state.select_slot(slot, &self.block_registry)
+                {
+                    window.request_redraw();
+                }
+            }
+        }
+
         if let Some(debug_view_mode) = selected_debug_view_mode(&self.input) {
             self.renderer.set_debug_view_mode(debug_view_mode);
             crate::log_info!("Render debug view: {}", debug_view_mode.label());
@@ -271,7 +303,7 @@ impl AppRuntime {
             &self.render_config.camera,
             self.zoom_active(),
         );
-        let debug_overlay = self.show_debug_overlay.then(|| self.build_debug_overlay_input());
+        let debug_overlay = Some(self.build_debug_overlay_input());
         let underwater_tint_active = self.player_eye_in_water();
 
         self.renderer.set_debug_overlay(debug_overlay);
@@ -291,8 +323,11 @@ impl AppRuntime {
         let player_chunk =
             crate::engine::world::coord::ChunkCoord::from_world_voxel(player_voxel).0;
         let terrain_debug = self.staged_generator.debug_sample_at(player_voxel.x, player_voxel.z);
+        let hud = self.edit_state.build_hud_state(&self.block_registry);
 
         DebugOverlayInput {
+            show_debug: self.show_debug_overlay,
+            show_game_hud: self.input.cursor_grabbed,
             fps: self.fps_counter.displayed_fps(),
             loaded_chunks: self.world.chunks.len() as u32,
             player_voxel: [player_voxel.x, player_voxel.y, player_voxel.z],
@@ -314,6 +349,7 @@ impl AppRuntime {
             biome_altitude_max: terrain_debug.biome_altitude_max,
             biome_continentalness_min_percent: terrain_debug.biome_continentalness_min_percent,
             biome_continentalness_max_percent: terrain_debug.biome_continentalness_max_percent,
+            hotbar_line: hud.hotbar_line,
         }
     }
 
@@ -329,41 +365,104 @@ impl AppRuntime {
             zoom_active,
         );
 
+        let scroll_steps = self.input.mouse_scroll_lines.round() as i32;
+        if scroll_steps != 0 {
+            let _ = self.edit_state.cycle_selection(scroll_steps, &self.block_registry);
+        }
+
         let interaction_origin = self.player.eye_position();
         let interaction_direction = self.player.forward_3d();
-        let mut world_changed = false;
 
-        if self.input.mouse_pressed(MouseButton::Left)
-            && remove_block_in_front(
+        if self.input.mouse_pressed(MouseButton::Middle) {
+            if let Some(preview) = preview_block_in_front(
+                &self.world,
+                &self.renderer.resolved_blocks,
+                &self.player,
+                interaction_origin,
+                interaction_direction,
+                self.player_config.reach_distance,
+            ) {
+                self.edit_state.pick_block(preview.target_block_id, &self.block_registry);
+            } else {
+                self.edit_state.set_feedback("No block to pick".to_string());
+            }
+        }
+
+        if self.input.key_pressed(KeyCode::KeyZ) {
+            if let Some(change) = self.edit_state.undo_last_edit(&mut self.world, &self.block_registry)
+            {
+                self.queue_world_edit_save(change.position, change.after);
+            }
+        }
+
+        if self.input.mouse_pressed(MouseButton::Left) {
+            match remove_block_in_front_detailed(
                 &mut self.world,
                 &self.renderer.resolved_blocks,
                 interaction_origin,
                 interaction_direction,
                 self.player_config.reach_distance,
-            )
-        {
-            crate::log_debug!("Removed block");
-            world_changed = true;
+            ) {
+                RemoveBlockOutcome::Removed(change) => {
+                    self.edit_state.record_edit(
+                        crate::engine::player::editing::BlockEditRecord {
+                            position: change.position,
+                            before: change.before,
+                            after: change.after,
+                        },
+                        &self.block_registry,
+                        change.before,
+                        "Broke",
+                    );
+                    self.queue_world_edit_save(change.position, change.after);
+                    crate::log_debug!("Removed block");
+                }
+                RemoveBlockOutcome::NoTarget => {
+                    self.edit_state.set_feedback("No block to remove".to_string());
+                }
+            }
         }
 
-        if self.input.mouse_pressed(MouseButton::Right)
-            && place_block_in_front(
+        if self.input.mouse_pressed(MouseButton::Right) {
+            let selected_block = self.edit_state.selected_block();
+            match place_block_in_front_detailed(
                 &mut self.world,
                 &self.renderer.resolved_blocks,
                 &self.player,
                 interaction_origin,
                 interaction_direction,
                 self.player_config.reach_distance,
-                self.placement_block_id,
-            )
-        {
-            crate::log_debug!("Placed stone block");
-            world_changed = true;
+                selected_block,
+            ) {
+                PlaceBlockOutcome::Placed(change) => {
+                    self.edit_state.record_edit(
+                        crate::engine::player::editing::BlockEditRecord {
+                            position: change.position,
+                            before: change.before,
+                            after: change.after,
+                        },
+                        &self.block_registry,
+                        change.after,
+                        "Placed",
+                    );
+                    self.queue_world_edit_save(change.position, change.after);
+                    crate::log_debug!("Placed block");
+                }
+                PlaceBlockOutcome::NoTarget => {
+                    self.edit_state.set_feedback("No block in reach".to_string());
+                }
+                PlaceBlockOutcome::NoPlacement => {
+                    self.edit_state.set_feedback("No placement space".to_string());
+                }
+                PlaceBlockOutcome::Occupied => {
+                    self.edit_state.set_feedback("Placement blocked".to_string());
+                }
+                PlaceBlockOutcome::BlockedByPlayer => {
+                    self.edit_state.set_feedback("Cannot place inside player".to_string());
+                }
+            }
         }
 
-        if world_changed && let Err(err) = self.persist_world_edits() {
-            crate::log_warn!("failed to save world edits to {}: {err:#}", self.save_file.display());
-        }
     }
 
     fn update_world_streaming(&mut self) -> anyhow::Result<()> {
@@ -391,13 +490,17 @@ impl AppRuntime {
             == self.water_block_id
     }
 
-    fn persist_world_edits(&self) -> anyhow::Result<()> {
-        persistence::save_block_edits(
-            &self.save_file,
-            &self.save_context,
-            &self.world,
-            &self.block_registry,
-        )
+    fn queue_world_edit_save(&self, position: crate::engine::core::math::IVec3, block_id: BlockId) {
+        if let Err(err) = self.world_saver.record_edit(position, block_id) {
+            crate::log_warn!(
+                "failed to queue world save update for {}: {err:#}",
+                self.save_file.display()
+            );
+        }
+    }
+
+    fn flush_pending_world_saves(&self) -> anyhow::Result<()> {
+        self.world_saver.flush()
     }
 }
 
@@ -420,6 +523,11 @@ pub(super) fn resolve_background_worker_counts(render_config: &RenderConfig) -> 
 }
 
 fn selected_debug_view_mode(input: &InputState) -> Option<DebugViewMode> {
+    let debug_modifier = input.key_held(KeyCode::ShiftLeft) || input.key_held(KeyCode::ShiftRight);
+    if !debug_modifier {
+        return None;
+    }
+
     if input.key_pressed(KeyCode::Digit1) {
         Some(DebugViewMode::Shaded)
     } else if input.key_pressed(KeyCode::Digit2) {
@@ -433,4 +541,32 @@ fn selected_debug_view_mode(input: &InputState) -> Option<DebugViewMode> {
     } else {
         None
     }
+}
+
+fn hotbar_digit_keys() -> [KeyCode; HOTBAR_SLOT_COUNT] {
+    [
+        KeyCode::Digit1,
+        KeyCode::Digit2,
+        KeyCode::Digit3,
+        KeyCode::Digit4,
+        KeyCode::Digit5,
+        KeyCode::Digit6,
+        KeyCode::Digit7,
+        KeyCode::Digit8,
+        KeyCode::Digit9,
+    ]
+}
+
+fn default_hotbar_slots(block_registry: &BlockRegistry) -> [BlockId; HOTBAR_SLOT_COUNT] {
+    [
+        block_registry.must_get_id("stone"),
+        block_registry.must_get_id("dirt"),
+        block_registry.must_get_id("grass"),
+        block_registry.must_get_id("oak_planks"),
+        block_registry.must_get_id("log"),
+        block_registry.must_get_id("glass"),
+        block_registry.must_get_id("leaves"),
+        block_registry.must_get_id("sand"),
+        block_registry.must_get_id("water"),
+    ]
 }

@@ -257,6 +257,8 @@ pub struct TextGlyphInstance {
 
 #[derive(Clone, Debug)]
 pub struct DebugOverlayInput {
+    pub show_debug: bool,
+    pub show_game_hud: bool,
     pub fps: u32,
     pub loaded_chunks: u32,
     pub player_voxel: [i32; 3],
@@ -278,11 +280,14 @@ pub struct DebugOverlayInput {
     pub biome_altitude_max: Option<i32>,
     pub biome_continentalness_min_percent: Option<u8>,
     pub biome_continentalness_max_percent: Option<u8>,
+    pub hotbar_line: Arc<str>,
 }
 
 impl Default for DebugOverlayInput {
     fn default() -> Self {
         Self {
+            show_debug: false,
+            show_game_hud: true,
             fps: 0,
             loaded_chunks: 0,
             player_voxel: [0; 3],
@@ -304,6 +309,7 @@ impl Default for DebugOverlayInput {
             biome_altitude_max: None,
             biome_continentalness_min_percent: None,
             biome_continentalness_max_percent: None,
+            hotbar_line: Arc::<str>::from(""),
         }
     }
 }

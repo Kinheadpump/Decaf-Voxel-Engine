@@ -19,6 +19,35 @@ pub struct BlockRayHit {
     pub placement: Option<IVec3>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BlockPlacementPreview {
+    pub hit: BlockRayHit,
+    pub target_block_id: BlockId,
+    pub placement_allowed: Option<bool>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BlockEditChange {
+    pub position: IVec3,
+    pub before: BlockId,
+    pub after: BlockId,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlaceBlockOutcome {
+    Placed(BlockEditChange),
+    NoTarget,
+    NoPlacement,
+    Occupied,
+    BlockedByPlayer,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RemoveBlockOutcome {
+    Removed(BlockEditChange),
+    NoTarget,
+}
+
 pub fn place_block_in_front(
     world: &mut World,
     resolved_blocks: &ResolvedBlockRegistry,
@@ -28,23 +57,18 @@ pub fn place_block_in_front(
     reach_distance: f32,
     block_id: BlockId,
 ) -> bool {
-    let hit = {
-        let accessor = VoxelAccessor { world };
-        raycast_blocks(&accessor, resolved_blocks, origin, direction, reach_distance)
-    };
-
-    let Some(hit) = hit else {
-        return false;
-    };
-    let Some(placement) = hit.placement else {
-        return false;
-    };
-
-    if !can_place_block_at(world, resolved_blocks, player, placement) {
-        return false;
-    }
-
-    world.set_block_world(placement, block_id)
+    matches!(
+        place_block_in_front_detailed(
+            world,
+            resolved_blocks,
+            player,
+            origin,
+            direction,
+            reach_distance,
+            block_id,
+        ),
+        PlaceBlockOutcome::Placed(_)
+    )
 }
 
 pub fn remove_block_in_front(
@@ -54,16 +78,104 @@ pub fn remove_block_in_front(
     direction: Vec3,
     reach_distance: f32,
 ) -> bool {
+    matches!(
+        remove_block_in_front_detailed(world, resolved_blocks, origin, direction, reach_distance),
+        RemoveBlockOutcome::Removed(_)
+    )
+}
+
+pub fn place_block_in_front_detailed(
+    world: &mut World,
+    resolved_blocks: &ResolvedBlockRegistry,
+    player: &Player,
+    origin: Vec3,
+    direction: Vec3,
+    reach_distance: f32,
+    block_id: BlockId,
+) -> PlaceBlockOutcome {
+    let preview =
+        preview_block_in_front(world, resolved_blocks, player, origin, direction, reach_distance);
+    let Some(preview) = preview else {
+        return PlaceBlockOutcome::NoTarget;
+    };
+    let Some(placement) = preview.hit.placement else {
+        return PlaceBlockOutcome::NoPlacement;
+    };
+
+    match preview.placement_allowed {
+        Some(true) => {
+            let before = current_block_id(world, placement);
+            if world.set_block_world(placement, block_id) {
+                PlaceBlockOutcome::Placed(BlockEditChange {
+                    position: placement,
+                    before,
+                    after: block_id,
+                })
+            } else {
+                PlaceBlockOutcome::Occupied
+            }
+        }
+        Some(false) => {
+            if player_intersects_voxel(player, placement) {
+                PlaceBlockOutcome::BlockedByPlayer
+            } else {
+                PlaceBlockOutcome::Occupied
+            }
+        }
+        None => PlaceBlockOutcome::NoPlacement,
+    }
+}
+
+pub fn remove_block_in_front_detailed(
+    world: &mut World,
+    resolved_blocks: &ResolvedBlockRegistry,
+    origin: Vec3,
+    direction: Vec3,
+    reach_distance: f32,
+) -> RemoveBlockOutcome {
     let hit = {
         let accessor = VoxelAccessor { world };
         raycast_blocks(&accessor, resolved_blocks, origin, direction, reach_distance)
     };
 
     let Some(hit) = hit else {
-        return false;
+        return RemoveBlockOutcome::NoTarget;
     };
 
-    world.set_block_world(hit.block, BlockId::AIR)
+    let before = current_block_id(world, hit.block);
+    if world.set_block_world(hit.block, BlockId::AIR) {
+        RemoveBlockOutcome::Removed(BlockEditChange {
+            position: hit.block,
+            before,
+            after: BlockId::AIR,
+        })
+    } else {
+        RemoveBlockOutcome::NoTarget
+    }
+}
+
+pub fn preview_block_in_front(
+    world: &World,
+    resolved_blocks: &ResolvedBlockRegistry,
+    player: &Player,
+    origin: Vec3,
+    direction: Vec3,
+    reach_distance: f32,
+) -> Option<BlockPlacementPreview> {
+    let hit = {
+        let accessor = VoxelAccessor { world };
+        raycast_blocks(&accessor, resolved_blocks, origin, direction, reach_distance)
+    };
+    let hit = hit?;
+    let target_block_id = current_block_id(world, hit.block);
+    let placement_allowed = hit.placement.map(|placement| {
+        matches!(
+            placeability_at(world, resolved_blocks, player, placement),
+            PlacementValidity::Allowed
+        )
+    });
+
+    Some(BlockPlacementPreview { hit, target_block_id, placement_allowed })
 }
 
 pub fn raycast_blocks(
@@ -199,18 +311,44 @@ fn boundary_candidates(
     ]
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PlacementValidity {
+    Allowed,
+    Occupied,
+    BlockedByPlayer,
+}
+
+fn placeability_at(
+    world: &World,
+    resolved_blocks: &ResolvedBlockRegistry,
+    player: &Player,
+    placement: IVec3,
+) -> PlacementValidity {
+    let placement_is_replaceable = {
+        let accessor = VoxelAccessor { world };
+        resolved_blocks.get_voxel(accessor.get_world_voxel(placement)).is_replaceable()
+    };
+
+    if !placement_is_replaceable {
+        PlacementValidity::Occupied
+    } else if player_intersects_voxel(player, placement) {
+        PlacementValidity::BlockedByPlayer
+    } else {
+        PlacementValidity::Allowed
+    }
+}
+
 fn can_place_block_at(
     world: &World,
     resolved_blocks: &ResolvedBlockRegistry,
     player: &Player,
     placement: IVec3,
 ) -> bool {
-    let placement_is_replaceable = {
-        let accessor = VoxelAccessor { world };
-        resolved_blocks.get_voxel(accessor.get_world_voxel(placement)).is_replaceable()
-    };
+    matches!(placeability_at(world, resolved_blocks, player, placement), PlacementValidity::Allowed)
+}
 
-    placement_is_replaceable && !player_intersects_voxel(player, placement)
+fn current_block_id(world: &World, position: IVec3) -> BlockId {
+    VoxelAccessor { world }.get_world_voxel(position).block_id()
 }
 
 fn player_intersects_voxel(player: &Player, voxel: IVec3) -> bool {

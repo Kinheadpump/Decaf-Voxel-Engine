@@ -1,7 +1,7 @@
 use std::{collections::HashSet, time::Instant};
 
 use winit::{
-    event::{DeviceEvent, ElementState, MouseButton, WindowEvent},
+    event::{DeviceEvent, ElementState, MouseButton, MouseScrollDelta, WindowEvent},
     keyboard::{KeyCode, PhysicalKey},
 };
 
@@ -16,6 +16,7 @@ pub struct InputState {
     released_mouse: HashSet<MouseButton>,
 
     pub mouse_delta: (f32, f32),
+    pub mouse_scroll_lines: f32,
     pub cursor_grabbed: bool,
     pub last_frame_time: Instant,
     pub dt: f32,
@@ -31,6 +32,7 @@ impl InputState {
             pressed_mouse: HashSet::new(),
             released_mouse: HashSet::new(),
             mouse_delta: (0.0, 0.0),
+            mouse_scroll_lines: 0.0,
             cursor_grabbed: false,
             last_frame_time: Instant::now(),
             dt: 0.0,
@@ -43,6 +45,7 @@ impl InputState {
         self.pressed_mouse.clear();
         self.released_mouse.clear();
         self.mouse_delta = (0.0, 0.0);
+        self.mouse_scroll_lines = 0.0;
 
         let now = Instant::now();
         self.dt = (now - self.last_frame_time).as_secs_f32().min(0.05);
@@ -77,6 +80,12 @@ impl InputState {
                     self.released_mouse.insert(*button);
                 }
             },
+            WindowEvent::MouseWheel { delta, .. } => {
+                self.mouse_scroll_lines += match delta {
+                    MouseScrollDelta::LineDelta(_, lines) => *lines,
+                    MouseScrollDelta::PixelDelta(position) => position.y as f32 / 32.0,
+                };
+            }
             _ => {}
         }
     }

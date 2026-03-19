@@ -4,7 +4,7 @@ use crate::engine::world::block::{
     builder::BlockBuilder, definition::BlockDefinition, id::BlockId,
 };
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct BlockRegistry {
     blocks: Vec<BlockDefinition>,
     name_to_id: HashMap<String, BlockId>,
