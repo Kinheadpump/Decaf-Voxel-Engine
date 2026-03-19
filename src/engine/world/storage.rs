@@ -93,6 +93,7 @@ impl World {
         self.persistent_edits.iter_world()
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn chunk_lifecycle(&self, coord: ChunkCoord) -> Option<ChunkLifecycle> {
         self.lifecycle.get(coord)
     }

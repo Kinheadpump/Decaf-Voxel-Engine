@@ -44,6 +44,7 @@ impl ChunkLifecycleTracker {
         self.chunks.remove(&coord)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn get(&self, coord: ChunkCoord) -> Option<ChunkLifecycle> {
         self.chunks.get(&coord).copied()
     }

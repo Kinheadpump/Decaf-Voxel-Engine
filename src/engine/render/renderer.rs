@@ -4,7 +4,7 @@ mod mesh_upload;
 mod overlay;
 mod pipelines;
 
-use std::{cmp::Ordering, num::NonZeroU64, sync::Arc};
+use std::{cmp::Ordering, num::NonZeroU64, sync::Arc, time::Duration};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
@@ -37,6 +37,17 @@ use self::{
         create_voxel_pipeline, create_wireframe_pipeline,
     },
 };
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MeshingPassStats {
+    pub chunk_results: u32,
+    pub faces_uploaded: u32,
+    pub dirty_slices: u32,
+    pub slice_buffer_growths: u32,
+    pub build_cpu_time_ns: u64,
+    pub upload_cpu_time_ns: u64,
+    pub wait_cpu_time_ns: u64,
+}
 
 pub struct Renderer {
     pub surface: wgpu::Surface<'static>,
@@ -81,6 +92,7 @@ pub struct Renderer {
     pub debug_view_mode: DebugViewMode,
     pub debug_overlay: Option<DebugOverlayInput>,
     pub last_frame_stats: RenderStats,
+    pub last_meshing_pass_stats: MeshingPassStats,
     pub use_multi_draw_indirect: bool,
     underwater_tint_active: bool,
     meshing_enqueue_budget: usize,
@@ -89,8 +101,6 @@ pub struct Renderer {
     overlay_config: OverlayConfig,
     clear_color: ClearColorConfig,
     sky_enabled: bool,
-    meshing_last_faces_uploaded: u32,
-    meshing_last_slice_buffer_growths: u32,
     opaque_draw_scratch: Vec<DrawMeta>,
     transparent_draw_scratch: Vec<(f32, DrawMeta)>,
     staged_draw_scratch: Vec<DrawMeta>,
@@ -602,6 +612,7 @@ impl Renderer {
                 hiz_enabled: render_config.enable_hiz_occlusion,
                 ..Default::default()
             },
+            last_meshing_pass_stats: MeshingPassStats::default(),
             use_multi_draw_indirect,
             underwater_tint_active: false,
             meshing_enqueue_budget: render_config.meshing_enqueue_budget,
@@ -610,8 +621,6 @@ impl Renderer {
             overlay_config: render_config.overlay,
             clear_color: render_config.clear_color,
             sky_enabled: render_config.sky.enabled,
-            meshing_last_faces_uploaded: 0,
-            meshing_last_slice_buffer_growths: 0,
             opaque_draw_scratch: Vec::new(),
             transparent_draw_scratch: Vec::new(),
             staged_draw_scratch: Vec::new(),
@@ -630,6 +639,10 @@ impl Renderer {
 
     pub fn set_underwater_tint_active(&mut self, active: bool) {
         self.underwater_tint_active = active;
+    }
+
+    pub fn last_meshing_pass_stats(&self) -> MeshingPassStats {
+        self.last_meshing_pass_stats
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -793,8 +806,8 @@ impl Renderer {
             opaque_draws: opaque_count as u32,
             transparent_draws: (staged_draws.len() - opaque_count) as u32,
             meshing_pending_chunks: self.mesher.pending_count() as u32,
-            meshing_faces_uploaded: self.meshing_last_faces_uploaded,
-            meshing_slice_buffer_growths: self.meshing_last_slice_buffer_growths,
+            meshing_faces_uploaded: self.last_meshing_pass_stats.faces_uploaded,
+            meshing_slice_buffer_growths: self.last_meshing_pass_stats.slice_buffer_growths,
             hiz_enabled: self.hiz_occlusion.is_some(),
         };
         self.last_frame_stats = current_stats;
@@ -950,4 +963,9 @@ impl Renderer {
 
         Ok(())
     }
+}
+
+#[inline]
+fn duration_to_nanos(duration: Duration) -> u64 {
+    duration.as_nanos().min(u128::from(u64::MAX)) as u64
 }

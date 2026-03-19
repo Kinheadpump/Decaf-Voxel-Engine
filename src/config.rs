@@ -5,6 +5,7 @@ use std::fs;
 #[serde(default)]
 pub struct Config {
     pub debug: DebugConfig,
+    pub benchmark: BenchmarkConfig,
     pub window: WindowConfig,
     pub render: RenderConfig,
     pub player: PlayerConfig,
@@ -20,6 +21,50 @@ pub struct DebugConfig {
 impl Default for DebugConfig {
     fn default() -> Self {
         Self { enable_profiler: true }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(default)]
+pub struct BenchmarkConfig {
+    pub meshing_upload: MeshingUploadBenchmarkConfig,
+}
+
+impl Default for BenchmarkConfig {
+    fn default() -> Self {
+        Self { meshing_upload: MeshingUploadBenchmarkConfig::default() }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(default)]
+pub struct MeshingUploadBenchmarkConfig {
+    pub warmup_iterations: usize,
+    pub measured_iterations: usize,
+    pub preload_radius_xz: i32,
+    pub preload_radius_y: i32,
+    pub edit_radius_xz: i32,
+    pub edit_radius_y: i32,
+    pub edits_per_chunk: usize,
+    pub wait_for_gpu: bool,
+    pub window_width: u32,
+    pub window_height: u32,
+}
+
+impl Default for MeshingUploadBenchmarkConfig {
+    fn default() -> Self {
+        Self {
+            warmup_iterations: 3,
+            measured_iterations: 12,
+            preload_radius_xz: 2,
+            preload_radius_y: 1,
+            edit_radius_xz: 1,
+            edit_radius_y: 0,
+            edits_per_chunk: 4,
+            wait_for_gpu: true,
+            window_width: 64,
+            window_height: 64,
+        }
     }
 }
 

@@ -1,4 +1,6 @@
+use crate::engine::core::types::FaceDir;
 use crate::engine::world::{
+    chunk::Chunk,
     coord::{ChunkCoord, WorldVoxelPos},
     storage::World,
     voxel::Voxel,
@@ -6,6 +8,10 @@ use crate::engine::world::{
 
 pub trait WorldVoxelReader {
     fn get_world_voxel<P: Into<WorldVoxelPos>>(&self, p: P) -> Voxel;
+}
+
+pub trait ChunkNeighborReader {
+    fn get_chunk_neighbor(&self, center: ChunkCoord, dir: FaceDir) -> Option<&Chunk>;
 }
 
 pub struct VoxelAccessor<'a> {
@@ -31,5 +37,12 @@ impl WorldVoxelReader for VoxelAccessor<'_> {
             .get(&chunk_coord)
             .map(|chunk| chunk.get_local(local))
             .unwrap_or(Voxel::AIR)
+    }
+}
+
+impl ChunkNeighborReader for VoxelAccessor<'_> {
+    #[inline]
+    fn get_chunk_neighbor(&self, center: ChunkCoord, dir: FaceDir) -> Option<&Chunk> {
+        self.world.chunks.get(&center.offset(dir.normal()))
     }
 }

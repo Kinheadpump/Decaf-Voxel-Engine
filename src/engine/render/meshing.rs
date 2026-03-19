@@ -1,6 +1,7 @@
 use std::{
     sync::Arc,
     thread::{self, JoinHandle},
+    time::Instant,
 };
 
 use ahash::AHashMap;
@@ -9,20 +10,19 @@ use crossbeam_channel::{Receiver, Sender, unbounded};
 
 use crate::engine::{
     core::{
-        math::{IVec3, Vec3},
+        math::Vec3,
         types::FaceDir,
     },
     world::{
-        accessor::WorldVoxelReader,
+        accessor::ChunkNeighborReader,
         block::resolved::ResolvedBlockRegistry,
         chunk::Chunk,
-        coord::{ChunkCoord, WorldVoxelPos},
+        coord::ChunkCoord,
         mesher::{
             ChunkMeshDirtyRegion, ChunkMeshSlices, MeshingBuildProfile, build_chunk_mesh_slices,
             rebuild_chunk_mesh_slices,
         },
         storage::{DirtyChunkEntry, World},
-        voxel::Voxel,
     },
 };
 
@@ -83,30 +83,15 @@ impl ChunkMeshingSnapshot {
 
         Some(Self { coord, generation: center.generation, center, neighbors })
     }
-
-    fn chunk_for_coord(&self, coord: ChunkCoord) -> Option<&Chunk> {
-        let delta = coord.0 - self.coord.0;
-
-        match (delta.x, delta.y, delta.z) {
-            (0, 0, 0) => Some(&self.center),
-            (1, 0, 0) => self.neighbors[FaceDir::PosX as usize].as_ref(),
-            (-1, 0, 0) => self.neighbors[FaceDir::NegX as usize].as_ref(),
-            (0, 1, 0) => self.neighbors[FaceDir::PosY as usize].as_ref(),
-            (0, -1, 0) => self.neighbors[FaceDir::NegY as usize].as_ref(),
-            (0, 0, 1) => self.neighbors[FaceDir::PosZ as usize].as_ref(),
-            (0, 0, -1) => self.neighbors[FaceDir::NegZ as usize].as_ref(),
-            _ => None,
-        }
-    }
 }
 
-impl WorldVoxelReader for ChunkMeshingSnapshot {
-    fn get_world_voxel<P: Into<WorldVoxelPos>>(&self, p: P) -> Voxel {
-        let p = p.into();
-        let coord = ChunkCoord::from_world_voxel(p);
-        let local = coord.local_voxel(p);
+impl ChunkNeighborReader for ChunkMeshingSnapshot {
+    fn get_chunk_neighbor(&self, center: ChunkCoord, dir: FaceDir) -> Option<&Chunk> {
+        if center != self.coord {
+            return None;
+        }
 
-        self.chunk_for_coord(coord).map(|chunk| chunk.get_local(local)).unwrap_or(Voxel::AIR)
+        self.neighbors[dir as usize].as_ref()
     }
 }
 
@@ -318,7 +303,8 @@ fn worker_loop(
         let _span = crate::profile_span!("mesher::build_chunk_mesh");
         let coord = job.snapshot.coord;
         let generation = job.snapshot.generation;
-        let (mesh_slices, profile) = if let Some(mut mesh_slices) = job.previous_mesh {
+        let build_started_at = Instant::now();
+        let (mesh_slices, mut profile) = if let Some(mut mesh_slices) = job.previous_mesh {
             let profile = rebuild_chunk_mesh_slices(
                 job.dirty_region,
                 coord,
@@ -337,6 +323,7 @@ fn worker_loop(
             )
         };
         let mesh = mesh_slices.flatten();
+        profile.build_cpu_time_ns = duration_to_nanos(build_started_at.elapsed());
 
         if result_tx
             .send(WorkerMeshResult {
@@ -352,6 +339,11 @@ fn worker_loop(
             break;
         }
     }
+}
+
+#[inline]
+fn duration_to_nanos(duration: std::time::Duration) -> u64 {
+    duration.as_nanos().min(u128::from(u64::MAX)) as u64
 }
 
 pub fn sort_chunk_coords_by_priority(coords: &mut [ChunkCoord], focus: MeshingFocus) {
@@ -381,6 +373,7 @@ fn chunk_priority_key(coord: ChunkCoord, focus: MeshingFocus) -> (i32, i32, i32,
 mod tests {
     use std::collections::HashMap;
 
+    use crate::engine::core::math::IVec3;
     use crate::engine::world::{
         block::create_default_block_registry, chunk::Chunk, storage::World,
     };

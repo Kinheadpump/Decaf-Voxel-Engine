@@ -392,7 +392,7 @@ impl AppRuntime {
     }
 }
 
-fn resolve_background_worker_counts(render_config: &RenderConfig) -> (usize, usize) {
+pub(super) fn resolve_background_worker_counts(render_config: &RenderConfig) -> (usize, usize) {
     let available_workers = std::thread::available_parallelism()
         .map(|count| count.get().saturating_sub(1).max(1))
         .unwrap_or(1);

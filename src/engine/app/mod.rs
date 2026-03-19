@@ -1,3 +1,4 @@
+mod benchmark;
 mod fps;
 mod runtime;
 mod spawn;
@@ -43,4 +44,8 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
 
     #[allow(unreachable_code)]
     Ok(())
+}
+
+pub async fn run_meshing_upload_benchmark(config: Config) -> anyhow::Result<()> {
+    benchmark::run_meshing_upload(config).await
 }

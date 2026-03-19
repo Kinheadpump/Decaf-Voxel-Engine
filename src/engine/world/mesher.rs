@@ -1,21 +1,26 @@
+use std::{cell::RefCell, thread_local};
+
 use crate::engine::{
     core::types::{CHUNK_SIZE, FaceDir},
     render::gpu_types::{ChunkMeshCpu, PackedFace, RenderBucket},
     world::{
-        accessor::WorldVoxelReader,
+        accessor::ChunkNeighborReader,
         block::{
             id::BlockId,
             resolved::{ResolvedBlock, ResolvedBlockRegistry},
             tint::BiomeTint,
         },
         chunk::Chunk,
-        coord::{ChunkCoord, LocalVoxelPos, WorldVoxelPos},
+        coord::{ChunkCoord, LocalVoxelPos},
+        voxel::Voxel,
     },
 };
 
 use crate::engine::render::gpu_types::{
     DEFAULT_FACE_TINT, FACE_TINT_MODE_GRASS, FACE_TINT_MODE_MULTIPLY, pack_face_tint,
 };
+
+const SLICE_AREA: usize = CHUNK_SIZE * CHUNK_SIZE;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ChunkMeshDirtyRegion {
@@ -63,8 +68,31 @@ impl ChunkMeshDirtyRegion {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn touches(self, dir: FaceDir, depth: usize) -> bool {
         self.full || (self.slice_masks[dir as usize] & (1u32 << depth)) != 0
+    }
+
+    fn collect_dirty_slices(self, out: &mut Vec<DirtySlice>) {
+        out.clear();
+
+        if self.full {
+            for dir in FaceDir::ALL {
+                for depth in 0..CHUNK_SIZE {
+                    out.push(DirtySlice { dir, depth });
+                }
+            }
+            return;
+        }
+
+        for dir in FaceDir::ALL {
+            let mut slices = self.slice_masks[dir as usize];
+            while slices != 0 {
+                let depth = slices.trailing_zeros() as usize;
+                out.push(DirtySlice { dir, depth });
+                slices &= slices - 1;
+            }
+        }
     }
 
     pub fn mark_local_voxel(&mut self, local: impl Into<LocalVoxelPos>) {
@@ -137,6 +165,8 @@ impl ChunkMeshSlices {
 pub struct MeshingBuildProfile {
     pub faces_emitted: u32,
     pub slice_buffer_growths: u32,
+    pub dirty_slice_count: u32,
+    pub build_cpu_time_ns: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -148,10 +178,39 @@ struct MaskCell {
     tint: u32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DirtySlice {
+    dir: FaceDir,
+    depth: usize,
+}
+
+struct MeshingScratch {
+    mask: Box<[MaskCell; SLICE_AREA]>,
+    used: Box<[bool; SLICE_AREA]>,
+    neighbor_voxels: Box<[Voxel; SLICE_AREA]>,
+    dirty_slices: Vec<DirtySlice>,
+}
+
+impl Default for MeshingScratch {
+    fn default() -> Self {
+        Self {
+            mask: Box::new([MaskCell::default(); SLICE_AREA]),
+            used: Box::new([false; SLICE_AREA]),
+            neighbor_voxels: Box::new([Voxel::AIR; SLICE_AREA]),
+            dirty_slices: Vec::with_capacity(FaceDir::ALL.len() * CHUNK_SIZE),
+        }
+    }
+}
+
+thread_local! {
+    static MESHING_SCRATCH: RefCell<MeshingScratch> =
+        RefCell::new(MeshingScratch::default());
+}
+
 pub fn build_chunk_mesh_slices(
     coord: ChunkCoord,
     chunk: &Chunk,
-    accessor: &(impl WorldVoxelReader + ?Sized),
+    neighbors: &(impl ChunkNeighborReader + ?Sized),
     resolved_blocks: &ResolvedBlockRegistry,
 ) -> (ChunkMeshSlices, MeshingBuildProfile) {
     let mut out = ChunkMeshSlices::new();
@@ -159,7 +218,7 @@ pub fn build_chunk_mesh_slices(
         ChunkMeshDirtyRegion::full(),
         coord,
         chunk,
-        accessor,
+        neighbors,
         resolved_blocks,
         &mut out,
     );
@@ -170,53 +229,65 @@ pub fn rebuild_chunk_mesh_slices(
     dirty_region: ChunkMeshDirtyRegion,
     coord: ChunkCoord,
     chunk: &Chunk,
-    accessor: &(impl WorldVoxelReader + ?Sized),
+    neighbors: &(impl ChunkNeighborReader + ?Sized),
     resolved_blocks: &ResolvedBlockRegistry,
     out: &mut ChunkMeshSlices,
 ) -> MeshingBuildProfile {
-    let chunk_origin = coord.world_origin();
-    let mut profile = MeshingBuildProfile::default();
+    let profile = MESHING_SCRATCH.with(|scratch| {
+        let mut scratch = scratch.borrow_mut();
+        dirty_region.collect_dirty_slices(&mut scratch.dirty_slices);
 
-    for dir in FaceDir::ALL {
-        for depth in 0..CHUNK_SIZE {
-            if !dirty_region.touches(dir, depth) {
-                continue;
-            }
+        let mut profile = MeshingBuildProfile {
+            dirty_slice_count: scratch.dirty_slices.len() as u32,
+            ..Default::default()
+        };
 
+        for dirty_slice_index in 0..scratch.dirty_slices.len() {
+            let dirty_slice = scratch.dirty_slices[dirty_slice_index];
             let (opaque_buckets, transparent_buckets) = out.faces.split_at_mut(1);
             let slice_faces = [
-                &mut opaque_buckets[RenderBucket::Opaque as usize][dir as usize][depth],
-                &mut transparent_buckets[0][dir as usize][depth],
+                &mut opaque_buckets[RenderBucket::Opaque as usize][dirty_slice.dir as usize]
+                    [dirty_slice.depth],
+                &mut transparent_buckets[0][dirty_slice.dir as usize][dirty_slice.depth],
             ];
             build_direction_slice_into(
-                chunk_origin,
+                coord,
                 chunk,
-                accessor,
+                neighbors,
                 resolved_blocks,
-                dir,
-                depth,
+                dirty_slice,
                 slice_faces,
+                &mut scratch,
                 &mut profile,
             );
         }
-    }
+
+        profile
+    });
 
     out.source_generation = chunk.generation;
     profile
 }
 
 fn build_direction_slice_into(
-    chunk_origin: WorldVoxelPos,
+    coord: ChunkCoord,
     chunk: &Chunk,
-    accessor: &(impl WorldVoxelReader + ?Sized),
+    neighbors: &(impl ChunkNeighborReader + ?Sized),
     resolved_blocks: &ResolvedBlockRegistry,
-    dir: FaceDir,
-    depth: usize,
+    dirty_slice: DirtySlice,
     mut out: [&mut Vec<PackedFace>; 2],
+    scratch: &mut MeshingScratch,
     profile: &mut MeshingBuildProfile,
 ) {
-    let mut mask = [[MaskCell::default(); CHUNK_SIZE]; CHUNK_SIZE];
-    let mut used = [[false; CHUNK_SIZE]; CHUNK_SIZE];
+    let dir = dirty_slice.dir;
+    let depth = dirty_slice.depth;
+    let axis_map = SliceAxisMap::for_face(dir);
+    let mask = &mut scratch.mask[..];
+    let used = &mut scratch.used[..];
+    let neighbor_voxels = &mut scratch.neighbor_voxels[..];
+
+    prefetch_neighbor_slice(chunk, coord, neighbors, axis_map, dirty_slice, neighbor_voxels);
+    used.fill(false);
 
     for faces in &mut out {
         faces.clear();
@@ -224,27 +295,24 @@ fn build_direction_slice_into(
 
     for v_index in 0..CHUNK_SIZE {
         for u_index in 0..CHUNK_SIZE {
-            used[u_index][v_index] = false;
-
-            let local = face_local_xyz(dir, depth, u_index, v_index);
+            let slice_index = slice_index(u_index, v_index);
+            let local = axis_map.local(depth, u_index, v_index);
             let voxel = chunk.get_local(local);
             let block_id = voxel.block_id();
             let block = resolved_blocks.get_voxel(voxel);
 
             if block.is_air() {
-                mask[u_index][v_index] = MaskCell::default();
+                mask[slice_index] = MaskCell::default();
                 continue;
             }
 
-            let world_voxel = chunk_origin + local.as_ivec3();
-            let neighbor_world = world_voxel + dir.normal();
-            let neighbor_voxel = accessor.get_world_voxel(neighbor_world);
+            let neighbor_voxel = neighbor_voxels[slice_index];
             let neighbor_id = neighbor_voxel.block_id();
             let neighbor = resolved_blocks.get_voxel(neighbor_voxel);
 
             let visible = face_visible_between(block_id, block, neighbor_id, neighbor);
 
-            mask[u_index][v_index] = if visible {
+            mask[slice_index] = if visible {
                 MaskCell {
                     visible: true,
                     block_id,
@@ -265,11 +333,12 @@ fn build_direction_slice_into(
     // Greedy meshing on the mask
     for v_index in 0..CHUNK_SIZE {
         for u_index in 0..CHUNK_SIZE {
-            if used[u_index][v_index] {
+            let cell_index = slice_index(u_index, v_index);
+            if used[cell_index] {
                 continue;
             }
 
-            let cell = mask[u_index][v_index];
+            let cell = mask[cell_index];
             if !cell.visible {
                 continue;
             }
@@ -280,8 +349,9 @@ fn build_direction_slice_into(
 
             let mut width = 1usize;
             while u_index + width < CHUNK_SIZE {
-                let c = mask[u_index + width][v_index];
-                if used[u_index + width][v_index]
+                let index = slice_index(u_index + width, v_index);
+                let c = mask[index];
+                if used[index]
                     || !c.visible
                     || c.block_id != block_id
                     || c.texture_id != texture_id
@@ -296,8 +366,9 @@ fn build_direction_slice_into(
             let mut height = 1usize;
             'outer: while v_index + height < CHUNK_SIZE {
                 for x in 0..width {
-                    let c = mask[u_index + x][v_index + height];
-                    if used[u_index + x][v_index + height]
+                    let index = slice_index(u_index + x, v_index + height);
+                    let c = mask[index];
+                    if used[index]
                         || !c.visible
                         || c.block_id != block_id
                         || c.texture_id != texture_id
@@ -310,13 +381,14 @@ fn build_direction_slice_into(
                 height += 1;
             }
 
-            for used_column in used.iter_mut().skip(u_index).take(width) {
-                for used_cell in used_column.iter_mut().skip(v_index).take(height) {
+            for dy in 0..height {
+                let row_start = slice_index(u_index, v_index + dy);
+                for used_cell in used[row_start..row_start + width].iter_mut() {
                     *used_cell = true;
                 }
             }
 
-            let anchor = face_local_xyz(dir, depth, u_index, v_index);
+            let anchor = axis_map.local(depth, u_index, v_index);
 
             let packed = PackedFace::pack(
                 anchor.as_uvec3().x,
@@ -336,6 +408,102 @@ fn build_direction_slice_into(
                 profile.slice_buffer_growths += 1;
             }
         }
+    }
+}
+
+fn prefetch_neighbor_slice(
+    center_chunk: &Chunk,
+    coord: ChunkCoord,
+    neighbors: &(impl ChunkNeighborReader + ?Sized),
+    axis_map: SliceAxisMap,
+    dirty_slice: DirtySlice,
+    out: &mut [Voxel],
+) {
+    debug_assert_eq!(out.len(), SLICE_AREA);
+
+    let boundary_face = is_boundary_slice(dirty_slice.dir, dirty_slice.depth);
+    if boundary_face {
+        let Some(neighbor_chunk) = neighbors.get_chunk_neighbor(coord, dirty_slice.dir) else {
+            out.fill(Voxel::AIR);
+            return;
+        };
+        let neighbor_depth = boundary_neighbor_depth(dirty_slice.dir);
+        fill_slice_voxels(neighbor_chunk, axis_map, neighbor_depth, out);
+    } else {
+        let neighbor_depth = adjacent_depth(dirty_slice.dir, dirty_slice.depth);
+        fill_slice_voxels(center_chunk, axis_map, neighbor_depth, out);
+    }
+}
+
+fn fill_slice_voxels(chunk: &Chunk, axis_map: SliceAxisMap, depth: usize, out: &mut [Voxel]) {
+    for v_index in 0..CHUNK_SIZE {
+        let row_start = v_index * CHUNK_SIZE;
+        for u_index in 0..CHUNK_SIZE {
+            let local = axis_map.local(depth, u_index, v_index);
+            out[row_start + u_index] = chunk.get_local(local);
+        }
+    }
+}
+
+#[inline]
+fn slice_index(u: usize, v: usize) -> usize {
+    debug_assert!(u < CHUNK_SIZE);
+    debug_assert!(v < CHUNK_SIZE);
+    u + v * CHUNK_SIZE
+}
+
+#[inline]
+fn is_boundary_slice(dir: FaceDir, depth: usize) -> bool {
+    match dir {
+        FaceDir::PosX | FaceDir::PosY | FaceDir::PosZ => depth + 1 == CHUNK_SIZE,
+        FaceDir::NegX | FaceDir::NegY | FaceDir::NegZ => depth == 0,
+    }
+}
+
+#[inline]
+fn adjacent_depth(dir: FaceDir, depth: usize) -> usize {
+    match dir {
+        FaceDir::PosX | FaceDir::PosY | FaceDir::PosZ => depth + 1,
+        FaceDir::NegX | FaceDir::NegY | FaceDir::NegZ => depth - 1,
+    }
+}
+
+#[inline]
+fn boundary_neighbor_depth(dir: FaceDir) -> usize {
+    match dir {
+        FaceDir::PosX | FaceDir::PosY | FaceDir::PosZ => 0,
+        FaceDir::NegX | FaceDir::NegY | FaceDir::NegZ => CHUNK_SIZE - 1,
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SliceAxisMap {
+    x_from: usize,
+    y_from: usize,
+    z_from: usize,
+}
+
+impl SliceAxisMap {
+    #[inline]
+    fn for_face(dir: FaceDir) -> Self {
+        match dir {
+            FaceDir::PosX => Self { x_from: 0, y_from: 1, z_from: 2 },
+            FaceDir::NegX => Self { x_from: 0, y_from: 2, z_from: 1 },
+            FaceDir::PosY => Self { x_from: 2, y_from: 0, z_from: 1 },
+            FaceDir::NegY => Self { x_from: 1, y_from: 0, z_from: 2 },
+            FaceDir::PosZ => Self { x_from: 1, y_from: 2, z_from: 0 },
+            FaceDir::NegZ => Self { x_from: 2, y_from: 1, z_from: 0 },
+        }
+    }
+
+    #[inline]
+    fn local(self, depth: usize, u: usize, v: usize) -> LocalVoxelPos {
+        let components = [depth as u32, u as u32, v as u32];
+        LocalVoxelPos::new(
+            components[self.x_from],
+            components[self.y_from],
+            components[self.z_from],
+        )
     }
 }
 
@@ -375,17 +543,6 @@ fn resolve_face_tint(chunk: &Chunk, block: ResolvedBlock, dir: FaceDir, x: usize
         BiomeTint::None => DEFAULT_FACE_TINT,
         BiomeTint::Grass => pack_face_tint(FACE_TINT_MODE_GRASS, tint.grass),
         BiomeTint::Foliage => pack_face_tint(FACE_TINT_MODE_MULTIPLY, tint.foliage),
-    }
-}
-
-fn face_local_xyz(dir: FaceDir, depth: usize, u: usize, v: usize) -> LocalVoxelPos {
-    match dir {
-        FaceDir::PosX => LocalVoxelPos::new(depth as u32, u as u32, v as u32),
-        FaceDir::NegX => LocalVoxelPos::new(depth as u32, v as u32, u as u32),
-        FaceDir::PosY => LocalVoxelPos::new(v as u32, depth as u32, u as u32),
-        FaceDir::NegY => LocalVoxelPos::new(u as u32, depth as u32, v as u32),
-        FaceDir::PosZ => LocalVoxelPos::new(u as u32, v as u32, depth as u32),
-        FaceDir::NegZ => LocalVoxelPos::new(v as u32, u as u32, depth as u32),
     }
 }
 
@@ -470,6 +627,19 @@ mod tests {
         assert!(region.touches(FaceDir::NegX, 31));
         assert!(region.touches(FaceDir::PosX, 30));
         assert!(!region.is_full());
+    }
+
+    #[test]
+    fn full_dirty_region_collects_every_slice() {
+        let mut slices = Vec::new();
+        ChunkMeshDirtyRegion::full().collect_dirty_slices(&mut slices);
+
+        assert_eq!(slices.len(), FaceDir::ALL.len() * CHUNK_SIZE);
+        assert_eq!(slices[0], DirtySlice { dir: FaceDir::PosX, depth: 0 });
+        assert_eq!(
+            slices.last().copied(),
+            Some(DirtySlice { dir: FaceDir::NegZ, depth: CHUNK_SIZE - 1 })
+        );
     }
 
     #[test]
