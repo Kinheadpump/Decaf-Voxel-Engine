@@ -7,7 +7,7 @@ use crate::{
             collision::aabb_intersects,
             math::{IVec3, Vec3},
         },
-        input::InputState,
+        input::SimulationInput,
         player::state::{MovementMode, Player},
         world::{accessor::VoxelAccessor, block::resolved::ResolvedBlockRegistry, storage::World},
     },
@@ -15,7 +15,7 @@ use crate::{
 
 pub fn update_player(
     player: &mut Player,
-    input: &InputState,
+    input: &SimulationInput<'_>,
     world: &World,
     resolved_blocks: &ResolvedBlockRegistry,
     total_time: f32,
@@ -34,8 +34,13 @@ pub fn update_player(
     }
 }
 
-fn update_look(player: &mut Player, input: &InputState, config: &PlayerConfig, zoom_active: bool) {
-    let (dx, dy) = input.mouse_delta;
+fn update_look(
+    player: &mut Player,
+    input: &SimulationInput<'_>,
+    config: &PlayerConfig,
+    zoom_active: bool,
+) {
+    let (dx, dy) = input.mouse_delta();
     let look_sensitivity = config.look_sensitivity(zoom_active);
 
     player.yaw += dx * look_sensitivity;
@@ -47,7 +52,7 @@ fn update_look(player: &mut Player, input: &InputState, config: &PlayerConfig, z
 
 fn update_mode_toggles(
     player: &mut Player,
-    input: &InputState,
+    input: &SimulationInput<'_>,
     total_time: f32,
     config: &PlayerConfig,
 ) {
@@ -78,11 +83,11 @@ fn update_mode_toggles(
 }
 
 #[inline]
-fn is_sprinting(input: &InputState) -> bool {
+fn is_sprinting(input: &SimulationInput<'_>) -> bool {
     input.key_held(KeyCode::ShiftLeft) || input.key_held(KeyCode::ShiftRight)
 }
 
-fn walking_move_direction(player: &Player, input: &InputState) -> Vec3 {
+fn walking_move_direction(player: &Player, input: &SimulationInput<'_>) -> Vec3 {
     let mut dir = Vec3::ZERO;
 
     if input.key_held(KeyCode::KeyW) {
@@ -101,7 +106,7 @@ fn walking_move_direction(player: &Player, input: &InputState) -> Vec3 {
     dir.normalize_or_zero()
 }
 
-fn flying_move_direction(player: &Player, input: &InputState) -> Vec3 {
+fn flying_move_direction(player: &Player, input: &SimulationInput<'_>) -> Vec3 {
     let mut dir = Vec3::ZERO;
     let forward = player.forward_flat();
     let right = player.right_flat();
@@ -171,12 +176,12 @@ fn apply_friction(vel: Vec3, friction: f32, dt: f32, horizontal_only: bool) -> V
 
 fn update_walking(
     player: &mut Player,
-    input: &InputState,
+    input: &SimulationInput<'_>,
     accessor: &VoxelAccessor,
     resolved_blocks: &ResolvedBlockRegistry,
     config: &PlayerConfig,
 ) {
-    let dt = input.dt;
+    let dt = input.dt();
 
     let wish_dir = walking_move_direction(player, input);
     let sprint = is_sprinting(input);
@@ -202,12 +207,12 @@ fn update_walking(
 
 fn update_flying(
     player: &mut Player,
-    input: &InputState,
+    input: &SimulationInput<'_>,
     accessor: &VoxelAccessor,
     resolved_blocks: &ResolvedBlockRegistry,
     config: &PlayerConfig,
 ) {
-    let dt = input.dt;
+    let dt = input.dt();
 
     let wish_dir = flying_move_direction(player, input);
     let sprint = is_sprinting(input);
@@ -321,7 +326,10 @@ mod tests {
     use super::flying_move_direction;
     use crate::{
         config::PlayerConfig,
-        engine::{input::InputState, player::state::Player},
+        engine::{
+            input::{InputState, SimulationInput},
+            player::state::Player,
+        },
     };
     use winit::keyboard::KeyCode;
 
@@ -337,6 +345,7 @@ mod tests {
         player.pitch = 1.0;
         input.set_key_held_for_test(KeyCode::KeyW);
 
+        let input = SimulationInput::continuous(&input, 1.0 / 60.0);
         let wish_dir = flying_move_direction(&player, &input);
 
         assert!(wish_dir.y.abs() <= f32::EPSILON);

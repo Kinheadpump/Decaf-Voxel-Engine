@@ -68,10 +68,7 @@ impl Chunk {
     #[inline]
     pub fn storage_mut(
         &mut self,
-    ) -> (
-        &mut [Voxel; CHUNK_VOLUME],
-        &mut [ColumnBiomeTints; CHUNK_COLUMN_COUNT],
-    ) {
+    ) -> (&mut [Voxel; CHUNK_VOLUME], &mut [ColumnBiomeTints; CHUNK_COLUMN_COUNT]) {
         let voxels = Arc::make_mut(&mut self.voxels);
         let column_biome_tints = Arc::make_mut(&mut self.column_biome_tints);
         (voxels, column_biome_tints)

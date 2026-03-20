@@ -62,14 +62,10 @@ impl Renderer {
         world.mark_chunk_meshed(coord, generation);
         self.last_meshing_pass_stats.chunk_results =
             self.last_meshing_pass_stats.chunk_results.saturating_add(1);
-        self.last_meshing_pass_stats.faces_uploaded = self
-            .last_meshing_pass_stats
-            .faces_uploaded
-            .saturating_add(face_count);
-        self.last_meshing_pass_stats.dirty_slices = self
-            .last_meshing_pass_stats
-            .dirty_slices
-            .saturating_add(profile.dirty_slice_count);
+        self.last_meshing_pass_stats.faces_uploaded =
+            self.last_meshing_pass_stats.faces_uploaded.saturating_add(face_count);
+        self.last_meshing_pass_stats.dirty_slices =
+            self.last_meshing_pass_stats.dirty_slices.saturating_add(profile.dirty_slice_count);
         self.last_meshing_pass_stats.slice_buffer_growths = self
             .last_meshing_pass_stats
             .slice_buffer_growths

@@ -8,6 +8,7 @@ pub struct Config {
     pub benchmark: BenchmarkConfig,
     pub window: WindowConfig,
     pub render: RenderConfig,
+    pub simulation: SimulationConfig,
     pub player: PlayerConfig,
     pub world: WorldConfig,
 }
@@ -78,6 +79,19 @@ pub struct WindowConfig {
 impl Default for WindowConfig {
     fn default() -> Self {
         Self { width: 1280, height: 720 }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(default)]
+pub struct SimulationConfig {
+    pub ticks_per_second: u32,
+    pub max_ticks_per_frame: usize,
+}
+
+impl Default for SimulationConfig {
+    fn default() -> Self {
+        Self { ticks_per_second: 60, max_ticks_per_frame: 4 }
     }
 }
 

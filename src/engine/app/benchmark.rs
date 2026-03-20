@@ -11,7 +11,7 @@ use crate::{
     config::{Config, MeshingUploadBenchmarkConfig},
     engine::{
         app::{
-            runtime::resolve_background_worker_counts, spawn::spawn_position_near_world_origin,
+            services::resolve_background_worker_counts, spawn::spawn_position_near_world_origin,
             streaming::WorldStreamer,
         },
         core::math::{IVec3, Vec3},

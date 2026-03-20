@@ -1,23 +1,18 @@
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 
 use winit::{
-    event::{DeviceEvent, MouseButton, WindowEvent},
+    event::{DeviceEvent, WindowEvent},
     event_loop::EventLoopWindowTarget,
     keyboard::KeyCode,
     window::{CursorGrabMode, Window},
 };
 
 use crate::{
-    config::{Config, PlayerConfig, RenderConfig},
+    config::{Config, RenderConfig, SimulationConfig},
     engine::{
-        input::InputState,
+        input::{InputState, SimulationInput, SimulationInputBuffer},
         player::{
             editing::{HOTBAR_SLOT_COUNT, PlayerEditState},
-            interaction::{
-                PlaceBlockOutcome, RemoveBlockOutcome, place_block_in_front_detailed,
-                preview_block_in_front, remove_block_in_front_detailed,
-            },
-            physics::update_player,
             state::{Player, camera_from_player},
         },
         render::{
@@ -26,12 +21,8 @@ use crate::{
             renderer::Renderer,
         },
         world::{
-            accessor::VoxelAccessor,
             biome::BiomeTable,
-            block::{
-                create_default_block_registry, id::BlockId, registry::BlockRegistry,
-                resolved::ResolvedBlockRegistry,
-            },
+            block::{create_default_block_registry, resolved::ResolvedBlockRegistry},
             generator::{ChunkGenerator, StagedGenerator},
             persistence,
             storage::World,
@@ -42,36 +33,36 @@ use crate::{
 
 use super::{
     fps::FpsCounter,
+    game_session::{GameRules, GameSession, default_hotbar_slots},
+    services::{
+        BackgroundServices, GenerationService, PersistenceService, resolve_background_worker_counts,
+    },
     spawn::spawn_position_near_world_origin,
     streaming::{WorldStreamer, meshing_focus_from_player},
 };
 
 pub(super) struct AppRuntime {
+    window: Arc<Window>,
     render_config: RenderConfig,
-    player_config: PlayerConfig,
     render_radius_xz: i32,
     render_radius_y: i32,
     generation_budget_per_frame: usize,
     completed_generation_budget_per_frame: usize,
-    staged_generator: Arc<StagedGenerator>,
-    streamer: WorldStreamer,
+    background: BackgroundServices,
     renderer: Renderer,
-    player: Player,
-    world: World,
-    save_file: PathBuf,
-    world_saver: persistence::AsyncWorldSaver,
+    session: GameSession,
     hud_texture_registry: HudTextureRegistry,
-    edit_state: PlayerEditState,
     input: InputState,
-    total_time: f32,
+    pending_simulation_input: SimulationInputBuffer,
+    simulation_clock: FixedSimulationClock,
     fps_counter: FpsCounter,
     show_debug_overlay: bool,
-    water_block_id: BlockId,
 }
 
 impl AppRuntime {
     pub(super) async fn new(window: Arc<Window>, config: Config) -> anyhow::Result<Self> {
         let render_config = config.render;
+        let simulation_config = config.simulation;
         let player_config = config.player;
         let world_config = config.world;
         let save_file = persistence::save_path(&world_config.save_file);
@@ -91,7 +82,7 @@ impl AppRuntime {
 
         let block_registry = create_default_block_registry();
         let water_block_id = block_registry.must_get_id("water");
-        let edit_state = PlayerEditState::new(default_hotbar_slots(&block_registry));
+        let inventory = PlayerEditState::new(default_hotbar_slots(&block_registry));
         let texture_registry = create_texture_registry(&block_registry);
         let hud_texture_registry = create_hud_texture_registry(&block_registry);
         let resolved_blocks =
@@ -123,7 +114,7 @@ impl AppRuntime {
         let mut world = World::new();
         let persistent_edits =
             persistence::load_block_edits(&save_file, &save_context, &block_registry)?;
-        let world_saver = persistence::AsyncWorldSaver::new(
+        let persistence = PersistenceService::new(
             save_file.clone(),
             save_context.clone(),
             &block_registry,
@@ -149,7 +140,7 @@ impl AppRuntime {
         )?;
 
         let mut renderer = Renderer::new(
-            window,
+            window.clone(),
             resolved_blocks,
             &texture_registry,
             &hud_texture_registry,
@@ -159,41 +150,51 @@ impl AppRuntime {
         .await?;
         renderer.finish_meshing(&mut world, initial_focus)?;
 
+        let session = GameSession::new(
+            player,
+            world,
+            inventory,
+            GameRules::new(player_config, water_block_id),
+        );
+        let background = BackgroundServices {
+            generation: GenerationService { staged_generator, streamer },
+            persistence,
+        };
+
         Ok(Self {
+            window,
             render_config,
-            player_config,
             render_radius_xz,
             render_radius_y,
             generation_budget_per_frame,
             completed_generation_budget_per_frame,
-            staged_generator,
-            streamer,
+            background,
             renderer,
-            player,
-            world,
-            save_file,
-            world_saver,
+            session,
             hud_texture_registry,
-            edit_state,
             input: InputState::new(),
-            total_time: 0.0,
+            pending_simulation_input: SimulationInputBuffer::default(),
+            simulation_clock: FixedSimulationClock::new(simulation_config),
             fps_counter: FpsCounter::new(),
             show_debug_overlay: false,
-            water_block_id,
         })
     }
 
-    pub(super) fn capture_cursor(&mut self, window: &Window) {
-        let _ = window
+    pub(super) fn capture_cursor(&mut self) {
+        let _ = self
+            .window
             .set_cursor_grab(CursorGrabMode::Locked)
-            .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined));
-        window.set_cursor_visible(false);
+            .or_else(|_| self.window.set_cursor_grab(CursorGrabMode::Confined));
+        self.window.set_cursor_visible(false);
         self.input.cursor_grabbed = true;
+    }
+
+    pub(super) fn request_redraw(&self) {
+        self.window.request_redraw();
     }
 
     pub(super) fn begin_frame(&mut self) {
         self.input.begin_frame();
-        self.total_time += self.input.dt;
         self.fps_counter.sample(self.input.dt);
     }
 
@@ -203,7 +204,6 @@ impl AppRuntime {
 
     pub(super) fn handle_window_event(
         &mut self,
-        window: &Window,
         event: WindowEvent,
         event_loop_target: &EventLoopWindowTarget<()>,
     ) {
@@ -212,7 +212,7 @@ impl AppRuntime {
                 if let Err(err) = self.flush_pending_world_saves() {
                     crate::log_warn!(
                         "failed to flush world edits to {} before exit: {err:#}",
-                        self.save_file.display()
+                        self.background.persistence.save_file().display()
                     );
                 }
                 event_loop_target.exit();
@@ -221,7 +221,7 @@ impl AppRuntime {
                 self.renderer.resize(size.width.max(1), size.height.max(1));
             }
             WindowEvent::Focused(false) => {
-                self.release_cursor(window);
+                self.release_cursor();
             }
             _ => {}
         }
@@ -229,7 +229,7 @@ impl AppRuntime {
         self.input.handle_window_event(&event);
 
         if matches!(event, WindowEvent::KeyboardInput { .. }) {
-            self.handle_keyboard_input(window);
+            self.handle_keyboard_input();
         }
 
         if matches!(event, WindowEvent::RedrawRequested) {
@@ -237,13 +237,12 @@ impl AppRuntime {
         }
     }
 
-    pub(super) fn handle_about_to_wait(
-        &mut self,
-        window: &Window,
-        event_loop_target: &EventLoopWindowTarget<()>,
-    ) {
+    pub(super) fn handle_about_to_wait(&mut self, event_loop_target: &EventLoopWindowTarget<()>) {
         if self.input.cursor_grabbed {
-            self.update_player_and_interactions();
+            self.run_simulation_ticks();
+        } else {
+            self.pending_simulation_input.clear();
+            self.simulation_clock.reset();
         }
 
         if let Err(err) = self.update_world_streaming() {
@@ -252,27 +251,29 @@ impl AppRuntime {
             return;
         }
 
-        window.request_redraw();
+        self.window.request_redraw();
     }
 
-    fn release_cursor(&mut self, window: &Window) {
-        let _ = window.set_cursor_grab(CursorGrabMode::None);
-        window.set_cursor_visible(true);
+    fn release_cursor(&mut self) {
+        let _ = self.window.set_cursor_grab(CursorGrabMode::None);
+        self.window.set_cursor_visible(true);
         self.input.cursor_grabbed = false;
+        self.pending_simulation_input.clear();
+        self.simulation_clock.reset();
     }
 
-    fn handle_keyboard_input(&mut self, window: &Window) {
+    fn handle_keyboard_input(&mut self) {
         if self.input.key_pressed(KeyCode::Escape) {
             if self.input.cursor_grabbed {
-                self.release_cursor(window);
+                self.release_cursor();
             } else {
-                self.capture_cursor(window);
+                self.capture_cursor();
             }
         }
 
         if self.input.key_pressed(KeyCode::F3) {
             self.show_debug_overlay = !self.show_debug_overlay;
-            window.request_redraw();
+            self.window.request_redraw();
         }
 
         let debug_modifier =
@@ -280,8 +281,8 @@ impl AppRuntime {
 
         if self.input.cursor_grabbed && !debug_modifier {
             for (slot, key) in hotbar_digit_keys().into_iter().enumerate() {
-                if self.input.key_pressed(key) && self.edit_state.select_slot(slot) {
-                    window.request_redraw();
+                if self.input.key_pressed(key) && self.session.select_hotbar_slot(slot) {
+                    self.window.request_redraw();
                 }
             }
         }
@@ -289,7 +290,7 @@ impl AppRuntime {
         if let Some(debug_view_mode) = selected_debug_view_mode(&self.input) {
             self.renderer.set_debug_view_mode(debug_view_mode);
             crate::log_info!("Render debug view: {}", debug_view_mode.label());
-            window.request_redraw();
+            self.window.request_redraw();
         }
     }
 
@@ -297,18 +298,17 @@ impl AppRuntime {
         let aspect_ratio =
             self.renderer.surface_config.width as f32 / self.renderer.surface_config.height as f32;
         let camera = camera_from_player(
-            &self.player,
+            self.session.player(),
             aspect_ratio,
             &self.render_config.camera,
             self.zoom_active(),
         );
         let debug_overlay = Some(self.build_debug_overlay_input());
-        let underwater_tint_active = self.player_eye_in_water();
 
         self.renderer.set_debug_overlay(debug_overlay);
-        self.renderer.set_underwater_tint_active(underwater_tint_active);
+        self.renderer.set_underwater_tint_active(self.session.player_eye_in_water());
 
-        if let Err(err) = self.renderer.render(&camera, self.total_time) {
+        if let Err(err) = self.renderer.render(&camera, self.session.simulation_time()) {
             crate::log_error!("render failed: {err:#}");
             event_loop_target.exit();
             return;
@@ -318,12 +318,17 @@ impl AppRuntime {
     }
 
     fn build_debug_overlay_input(&self) -> DebugOverlayInput {
-        let player_voxel = self.player.position.floor().as_ivec3();
+        let player = self.session.player();
+        let player_voxel = player.position.floor().as_ivec3();
         let player_chunk =
             crate::engine::world::coord::ChunkCoord::from_world_voxel(player_voxel).0;
-        let terrain_debug = self.staged_generator.debug_sample_at(player_voxel.x, player_voxel.z);
+        let terrain_debug = self
+            .background
+            .generation
+            .staged_generator
+            .debug_sample_at(player_voxel.x, player_voxel.z);
         let hotbar_icon_layers = self
-            .edit_state
+            .session
             .hotbar_slots()
             .map(|block_id| self.hud_texture_registry.block_icon_layer(block_id));
 
@@ -331,10 +336,10 @@ impl AppRuntime {
             show_debug: self.show_debug_overlay,
             show_game_hud: self.input.cursor_grabbed,
             fps: self.fps_counter.displayed_fps(),
-            loaded_chunks: self.world.chunks.len() as u32,
+            loaded_chunks: self.session.world().chunks.len() as u32,
             player_voxel: [player_voxel.x, player_voxel.y, player_voxel.z],
             player_chunk: [player_chunk.x, player_chunk.y, player_chunk.z],
-            player_facing: self.player.cardinal_facing(),
+            player_facing: player.cardinal_facing(),
             biome_name: terrain_debug.biome_name,
             region_name: terrain_debug.region_name,
             ground_y: terrain_debug.ground_y,
@@ -342,102 +347,38 @@ impl AppRuntime {
             humidity_percent: terrain_debug.humidity_percent,
             continentalness_percent: terrain_debug.continentalness_percent,
             hotbar_icon_layers,
-            selected_hotbar_slot: self.edit_state.selected_slot() as u32,
+            selected_hotbar_slot: self.session.selected_hotbar_slot() as u32,
         }
     }
 
-    fn update_player_and_interactions(&mut self) {
+    fn run_simulation_ticks(&mut self) {
+        self.input.accumulate_simulation_input(&mut self.pending_simulation_input);
+        let tick_count = self.simulation_clock.consume_frame(self.input.dt);
+        if tick_count == 0 {
+            return;
+        }
+
+        let persistence = &self.background.persistence;
+        let tick_dt = self.simulation_clock.tick_dt_seconds();
         let zoom_active = self.zoom_active();
-        update_player(
-            &mut self.player,
-            &self.input,
-            &self.world,
-            &self.renderer.resolved_blocks,
-            self.total_time,
-            &self.player_config,
-            zoom_active,
-        );
 
-        let scroll_steps = self.input.mouse_scroll_lines.round() as i32;
-        if scroll_steps != 0 {
-            let _ = self.edit_state.cycle_selection(scroll_steps);
-        }
+        for tick_index in 0..tick_count {
+            let tick_input = if tick_index == 0 {
+                self.pending_simulation_input.drain_for_tick(&self.input, tick_dt)
+            } else {
+                SimulationInput::continuous(&self.input, tick_dt)
+            };
 
-        let interaction_origin = self.player.eye_position();
-        let interaction_direction = self.player.forward_3d();
-
-        if self.input.mouse_pressed(MouseButton::Middle) {
-            if let Some(preview) = preview_block_in_front(
-                &self.world,
-                &self.renderer.resolved_blocks,
-                &self.player,
-                interaction_origin,
-                interaction_direction,
-                self.player_config.reach_distance,
-            ) {
-                self.edit_state.pick_block(preview.target_block_id);
-            }
-        }
-
-        if self.input.key_pressed(KeyCode::KeyZ) {
-            if let Some(change) = self.edit_state.undo_last_edit(&mut self.world) {
-                self.queue_world_edit_save(change.position, change.after);
-            }
-        }
-
-        if self.input.mouse_pressed(MouseButton::Left) {
-            match remove_block_in_front_detailed(
-                &mut self.world,
-                &self.renderer.resolved_blocks,
-                interaction_origin,
-                interaction_direction,
-                self.player_config.reach_distance,
-            ) {
-                RemoveBlockOutcome::Removed(change) => {
-                    self.edit_state.record_edit(crate::engine::player::editing::BlockEditRecord {
-                        position: change.position,
-                        before: change.before,
-                        after: change.after,
-                    });
-                    self.queue_world_edit_save(change.position, change.after);
-                    crate::log_debug!("Removed block");
-                }
-                RemoveBlockOutcome::NoTarget => {}
-            }
-        }
-
-        if self.input.mouse_pressed(MouseButton::Right) {
-            let selected_block = self.edit_state.selected_block();
-            match place_block_in_front_detailed(
-                &mut self.world,
-                &self.renderer.resolved_blocks,
-                &self.player,
-                interaction_origin,
-                interaction_direction,
-                self.player_config.reach_distance,
-                selected_block,
-            ) {
-                PlaceBlockOutcome::Placed(change) => {
-                    self.edit_state.record_edit(crate::engine::player::editing::BlockEditRecord {
-                        position: change.position,
-                        before: change.before,
-                        after: change.after,
-                    });
-                    self.queue_world_edit_save(change.position, change.after);
-                    crate::log_debug!("Placed block");
-                }
-                PlaceBlockOutcome::NoTarget
-                | PlaceBlockOutcome::NoPlacement
-                | PlaceBlockOutcome::Occupied
-                | PlaceBlockOutcome::BlockedByPlayer => {}
-            }
+            self.session.tick(&tick_input, &self.renderer.resolved_blocks, zoom_active, |edit| {
+                persistence.queue_world_edit(edit.position, edit.block_id)
+            });
         }
     }
 
     fn update_world_streaming(&mut self) -> anyhow::Result<()> {
-        let meshing_focus = meshing_focus_from_player(&self.player);
-        self.streamer.pump(
-            &mut self.world,
+        let meshing_focus = meshing_focus_from_player(self.session.player());
+        self.background.generation.streamer.pump(
+            self.session.world_mut(),
             Some(&mut self.renderer),
             meshing_focus,
             self.render_radius_xz,
@@ -445,7 +386,7 @@ impl AppRuntime {
             self.generation_budget_per_frame,
             self.completed_generation_budget_per_frame,
         )?;
-        self.renderer.pump_meshing(&mut self.world, meshing_focus)?;
+        self.renderer.pump_meshing(self.session.world_mut(), meshing_focus)?;
         Ok(())
     }
 
@@ -453,42 +394,51 @@ impl AppRuntime {
         self.input.cursor_grabbed && self.input.key_held(KeyCode::KeyC)
     }
 
-    fn player_eye_in_water(&self) -> bool {
-        let eye_voxel = self.player.eye_position().floor().as_ivec3();
-        VoxelAccessor { world: &self.world }.get_world_voxel(eye_voxel).block_id()
-            == self.water_block_id
-    }
-
-    fn queue_world_edit_save(&self, position: crate::engine::core::math::IVec3, block_id: BlockId) {
-        if let Err(err) = self.world_saver.record_edit(position, block_id) {
-            crate::log_warn!(
-                "failed to queue world save update for {}: {err:#}",
-                self.save_file.display()
-            );
-        }
-    }
-
     fn flush_pending_world_saves(&self) -> anyhow::Result<()> {
-        self.world_saver.flush()
+        self.background.persistence.flush()
     }
 }
 
-pub(super) fn resolve_background_worker_counts(render_config: &RenderConfig) -> (usize, usize) {
-    let available_workers = std::thread::available_parallelism()
-        .map(|count| count.get().saturating_sub(1).max(1))
-        .unwrap_or(1);
-    let generation_worker_count = if render_config.generation_worker_count == 0 {
-        (available_workers / 3).max(1)
-    } else {
-        render_config.generation_worker_count.max(1)
-    };
-    let meshing_worker_count = if render_config.meshing_worker_count == 0 {
-        available_workers.saturating_sub(generation_worker_count).max(1)
-    } else {
-        render_config.meshing_worker_count.max(1)
-    };
+#[derive(Debug)]
+struct FixedSimulationClock {
+    tick_dt_seconds: f32,
+    max_ticks_per_frame: usize,
+    accumulator_seconds: f32,
+}
 
-    (generation_worker_count, meshing_worker_count)
+impl FixedSimulationClock {
+    fn new(config: SimulationConfig) -> Self {
+        let ticks_per_second = config.ticks_per_second.max(1);
+        Self {
+            tick_dt_seconds: 1.0 / ticks_per_second as f32,
+            max_ticks_per_frame: config.max_ticks_per_frame.max(1),
+            accumulator_seconds: 0.0,
+        }
+    }
+
+    #[inline]
+    fn tick_dt_seconds(&self) -> f32 {
+        self.tick_dt_seconds
+    }
+
+    fn consume_frame(&mut self, frame_dt: f32) -> usize {
+        let max_accumulator = self.tick_dt_seconds * self.max_ticks_per_frame as f32;
+        self.accumulator_seconds = (self.accumulator_seconds + frame_dt).min(max_accumulator);
+
+        let mut tick_count = 0;
+        while self.accumulator_seconds + f32::EPSILON >= self.tick_dt_seconds
+            && tick_count < self.max_ticks_per_frame
+        {
+            self.accumulator_seconds -= self.tick_dt_seconds;
+            tick_count += 1;
+        }
+        self.accumulator_seconds = self.accumulator_seconds.max(0.0);
+        tick_count
+    }
+
+    fn reset(&mut self) {
+        self.accumulator_seconds = 0.0;
+    }
 }
 
 fn selected_debug_view_mode(input: &InputState) -> Option<DebugViewMode> {
@@ -526,16 +476,30 @@ fn hotbar_digit_keys() -> [KeyCode; HOTBAR_SLOT_COUNT] {
     ]
 }
 
-fn default_hotbar_slots(block_registry: &BlockRegistry) -> [BlockId; HOTBAR_SLOT_COUNT] {
-    [
-        block_registry.must_get_id("stone"),
-        block_registry.must_get_id("dirt"),
-        block_registry.must_get_id("grass"),
-        block_registry.must_get_id("oak_planks"),
-        block_registry.must_get_id("log"),
-        block_registry.must_get_id("glass"),
-        block_registry.must_get_id("leaves"),
-        block_registry.must_get_id("sand"),
-        block_registry.must_get_id("water"),
-    ]
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fixed_simulation_clock_accumulates_partial_frames() {
+        let mut clock = FixedSimulationClock::new(SimulationConfig {
+            ticks_per_second: 20,
+            max_ticks_per_frame: 4,
+        });
+
+        assert_eq!(clock.consume_frame(0.02), 0);
+        assert_eq!(clock.consume_frame(0.03), 1);
+        assert_eq!(clock.consume_frame(0.05), 1);
+    }
+
+    #[test]
+    fn fixed_simulation_clock_caps_catch_up_work() {
+        let mut clock = FixedSimulationClock::new(SimulationConfig {
+            ticks_per_second: 60,
+            max_ticks_per_frame: 3,
+        });
+
+        assert_eq!(clock.consume_frame(1.0), 3);
+        assert!(clock.accumulator_seconds <= clock.tick_dt_seconds());
+    }
 }

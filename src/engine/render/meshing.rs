@@ -9,10 +9,7 @@ use anyhow::Context;
 use crossbeam_channel::{Receiver, Sender, unbounded};
 
 use crate::engine::{
-    core::{
-        math::Vec3,
-        types::FaceDir,
-    },
+    core::{math::Vec3, types::FaceDir},
     world::{
         accessor::ChunkNeighborReader,
         block::resolved::ResolvedBlockRegistry,
@@ -470,10 +467,7 @@ mod tests {
             .expect("east neighbor should be captured");
 
         assert!(Arc::ptr_eq(&snapshot.center.voxels, &world_center.voxels));
-        assert!(Arc::ptr_eq(
-            &snapshot.center.column_biome_tints,
-            &world_center.column_biome_tints
-        ));
+        assert!(Arc::ptr_eq(&snapshot.center.column_biome_tints, &world_center.column_biome_tints));
         assert!(Arc::ptr_eq(&east_snapshot.voxels, &world_east.voxels));
     }
 }

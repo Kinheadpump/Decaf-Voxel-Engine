@@ -22,6 +22,24 @@ pub struct InputState {
     pub dt: f32,
 }
 
+#[derive(Debug)]
+pub struct SimulationInput<'a> {
+    state: &'a InputState,
+    pressed_keys: HashSet<KeyCode>,
+    pressed_mouse: HashSet<MouseButton>,
+    mouse_delta: (f32, f32),
+    mouse_scroll_lines: f32,
+    dt: f32,
+}
+
+#[derive(Debug, Default)]
+pub struct SimulationInputBuffer {
+    pressed_keys: HashSet<KeyCode>,
+    pressed_mouse: HashSet<MouseButton>,
+    mouse_delta: (f32, f32),
+    mouse_scroll_lines: f32,
+}
+
 impl InputState {
     pub fn new() -> Self {
         Self {
@@ -107,13 +125,140 @@ impl InputState {
         self.pressed_keys.contains(&key)
     }
 
-    #[inline]
-    pub fn mouse_pressed(&self, button: MouseButton) -> bool {
-        self.pressed_mouse.contains(&button)
+    pub fn accumulate_simulation_input(&self, buffer: &mut SimulationInputBuffer) {
+        buffer.pressed_keys.extend(self.pressed_keys.iter().copied());
+        buffer.pressed_mouse.extend(self.pressed_mouse.iter().copied());
+        buffer.mouse_delta.0 += self.mouse_delta.0;
+        buffer.mouse_delta.1 += self.mouse_delta.1;
+        buffer.mouse_scroll_lines += self.mouse_scroll_lines;
     }
 
     #[cfg(test)]
     pub fn set_key_held_for_test(&mut self, key: KeyCode) {
         self.held_keys.insert(key);
+    }
+
+    #[cfg(test)]
+    pub fn set_key_pressed_for_test(&mut self, key: KeyCode) {
+        self.pressed_keys.insert(key);
+    }
+
+    #[cfg(test)]
+    pub fn set_mouse_pressed_for_test(&mut self, button: MouseButton) {
+        self.pressed_mouse.insert(button);
+    }
+
+    #[cfg(test)]
+    pub fn set_mouse_delta_for_test(&mut self, mouse_delta: (f32, f32)) {
+        self.mouse_delta = mouse_delta;
+    }
+
+    #[cfg(test)]
+    pub fn set_mouse_scroll_lines_for_test(&mut self, mouse_scroll_lines: f32) {
+        self.mouse_scroll_lines = mouse_scroll_lines;
+    }
+}
+
+impl SimulationInputBuffer {
+    pub fn clear(&mut self) {
+        self.pressed_keys.clear();
+        self.pressed_mouse.clear();
+        self.mouse_delta = (0.0, 0.0);
+        self.mouse_scroll_lines = 0.0;
+    }
+
+    pub fn drain_for_tick<'a>(&mut self, state: &'a InputState, dt: f32) -> SimulationInput<'a> {
+        SimulationInput {
+            state,
+            pressed_keys: std::mem::take(&mut self.pressed_keys),
+            pressed_mouse: std::mem::take(&mut self.pressed_mouse),
+            mouse_delta: std::mem::take(&mut self.mouse_delta),
+            mouse_scroll_lines: std::mem::take(&mut self.mouse_scroll_lines),
+            dt,
+        }
+    }
+}
+
+impl<'a> SimulationInput<'a> {
+    pub fn continuous(state: &'a InputState, dt: f32) -> Self {
+        Self {
+            state,
+            pressed_keys: HashSet::new(),
+            pressed_mouse: HashSet::new(),
+            mouse_delta: (0.0, 0.0),
+            mouse_scroll_lines: 0.0,
+            dt,
+        }
+    }
+
+    #[inline]
+    pub fn dt(&self) -> f32 {
+        self.dt
+    }
+
+    #[inline]
+    pub fn mouse_delta(&self) -> (f32, f32) {
+        self.mouse_delta
+    }
+
+    #[inline]
+    pub fn mouse_scroll_lines(&self) -> f32 {
+        self.mouse_scroll_lines
+    }
+
+    #[inline]
+    pub fn key_held(&self, key: KeyCode) -> bool {
+        self.state.key_held(key)
+    }
+
+    #[inline]
+    pub fn key_pressed(&self, key: KeyCode) -> bool {
+        self.pressed_keys.contains(&key)
+    }
+
+    #[inline]
+    pub fn mouse_pressed(&self, button: MouseButton) -> bool {
+        self.pressed_mouse.contains(&button)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn simulation_input_buffer_preserves_edge_input_until_tick() {
+        let mut input = InputState::new();
+        let mut buffer = SimulationInputBuffer::default();
+        input.set_key_pressed_for_test(KeyCode::Space);
+        input.set_mouse_pressed_for_test(MouseButton::Left);
+        input.set_mouse_delta_for_test((3.0, -2.0));
+        input.set_mouse_scroll_lines_for_test(-1.0);
+
+        input.accumulate_simulation_input(&mut buffer);
+        let tick = buffer.drain_for_tick(&input, 1.0 / 60.0);
+
+        assert!(tick.key_pressed(KeyCode::Space));
+        assert!(tick.mouse_pressed(MouseButton::Left));
+        assert_eq!(tick.mouse_delta(), (3.0, -2.0));
+        assert_eq!(tick.mouse_scroll_lines(), -1.0);
+        assert!(!buffer.drain_for_tick(&input, 1.0 / 60.0).key_pressed(KeyCode::Space));
+    }
+
+    #[test]
+    fn simulation_input_buffer_accumulates_multiple_frames() {
+        let mut input = InputState::new();
+        let mut buffer = SimulationInputBuffer::default();
+        input.set_mouse_delta_for_test((1.0, 2.0));
+        input.set_mouse_scroll_lines_for_test(1.0);
+        input.accumulate_simulation_input(&mut buffer);
+
+        input.set_mouse_delta_for_test((2.5, -3.0));
+        input.set_mouse_scroll_lines_for_test(-0.5);
+        input.accumulate_simulation_input(&mut buffer);
+
+        let tick = buffer.drain_for_tick(&input, 1.0 / 60.0);
+        assert_eq!(tick.mouse_delta(), (3.5, -1.0));
+        assert_eq!(tick.mouse_scroll_lines(), 0.5);
     }
 }
