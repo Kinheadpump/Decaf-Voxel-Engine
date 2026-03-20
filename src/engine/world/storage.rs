@@ -89,6 +89,7 @@ impl World {
         self.persistent_edits.record_world(p, block_id);
     }
 
+    #[cfg(test)]
     pub fn iter_persistent_edits(&self) -> impl Iterator<Item = (WorldVoxelPos, BlockId)> + '_ {
         self.persistent_edits.iter_world()
     }

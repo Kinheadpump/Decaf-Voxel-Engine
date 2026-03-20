@@ -57,6 +57,7 @@ impl BlockBuilder {
         self
     }
 
+    #[allow(dead_code)]
     pub fn tint(mut self, tint: BlockTint) -> Self {
         self.tint = tint;
         self

@@ -10,41 +10,52 @@ pub mod tint;
 use builder::BlockBuilder;
 use registry::BlockRegistry;
 use textures::BlockTextures;
-use tint::{BiomeTint, BlockTint};
 
 pub fn create_default_block_registry() -> BlockRegistry {
     let mut registry = BlockRegistry::new();
 
-    registry.register(BlockBuilder::new("air").replaceable().textures(BlockTextures::all("air")));
-
-    registry.register(
-        BlockBuilder::new("grass")
-            .solid()
-            .opaque()
-            .textures(BlockTextures::top_bottom_sides("grass_top", "dirt", "grass_side"))
-            .tint(BlockTint::top_bottom_sides(BiomeTint::Grass, BiomeTint::None, BiomeTint::None)),
-    );
-
     registry
-        .register(BlockBuilder::new("dirt").solid().opaque().textures(BlockTextures::all("dirt")));
+        .register(BlockBuilder::new("air").replaceable().textures(BlockTextures::all("ui/empty")));
+
+    registry.register(BlockBuilder::new("grass").solid().opaque().textures(
+        BlockTextures::top_bottom_sides(
+            "kenny/Tiles/grass_top",
+            "kenny/Tiles/dirt",
+            "kenny/Tiles/dirt_grass",
+        ),
+    ));
 
     registry.register(
-        BlockBuilder::new("stone").solid().opaque().textures(BlockTextures::all("stone")),
+        BlockBuilder::new("dirt").solid().opaque().textures(BlockTextures::all("kenny/Tiles/dirt")),
     );
 
     registry.register(
-        BlockBuilder::new("oak_planks").solid().opaque().textures(BlockTextures::all("oak_planks")),
-    );
-
-    registry.register(
-        BlockBuilder::new("log")
+        BlockBuilder::new("stone")
             .solid()
             .opaque()
-            .textures(BlockTextures::top_bottom_sides("log_top", "log_top", "log_side")),
+            .textures(BlockTextures::all("kenny/Tiles/stone")),
     );
 
     registry.register(
-        BlockBuilder::new("glass").solid().transparent().textures(BlockTextures::all("glass")),
+        BlockBuilder::new("oak_planks")
+            .solid()
+            .opaque()
+            .textures(BlockTextures::all("kenny/Tiles/wood")),
+    );
+
+    registry.register(BlockBuilder::new("log").solid().opaque().textures(
+        BlockTextures::top_bottom_sides(
+            "kenny/Tiles/trunk_top",
+            "kenny/Tiles/trunk_bottom",
+            "kenny/Tiles/trunk_side",
+        ),
+    ));
+
+    registry.register(
+        BlockBuilder::new("glass")
+            .solid()
+            .transparent()
+            .textures(BlockTextures::all("kenny/Tiles/glass_frame")),
     );
 
     registry.register(
@@ -52,12 +63,12 @@ pub fn create_default_block_registry() -> BlockRegistry {
             .solid()
             .transparent()
             .no_cull()
-            .textures(BlockTextures::all("leaves"))
-            .tint(BlockTint::all(BiomeTint::Foliage)),
+            .textures(BlockTextures::all("kenny/Tiles/leaves_transparent")),
     );
 
-    registry
-        .register(BlockBuilder::new("sand").solid().opaque().textures(BlockTextures::all("sand")));
+    registry.register(
+        BlockBuilder::new("sand").solid().opaque().textures(BlockTextures::all("kenny/Tiles/sand")),
+    );
 
     registry.register(
         BlockBuilder::new("water")
@@ -65,7 +76,7 @@ pub fn create_default_block_registry() -> BlockRegistry {
             .liquid()
             .replaceable()
             .raycast_through()
-            .textures(BlockTextures::all("water")),
+            .textures(BlockTextures::all("kenny/Tiles/water")),
     );
 
     registry

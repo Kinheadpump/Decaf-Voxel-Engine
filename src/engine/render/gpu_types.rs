@@ -255,6 +255,18 @@ pub struct TextGlyphInstance {
     pub _pad: [u32; 3],
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
+pub struct HudSpriteInstance {
+    pub origin_px: [f32; 2],
+    pub size_px: [f32; 2],
+    pub uv_min: [f32; 2],
+    pub uv_max: [f32; 2],
+    pub tint: [f32; 4],
+    pub texture_layer: u32,
+    pub _pad: [u32; 3],
+}
+
 #[derive(Clone, Debug)]
 pub struct DebugOverlayInput {
     pub show_debug: bool,
@@ -265,22 +277,13 @@ pub struct DebugOverlayInput {
     pub player_chunk: [i32; 3],
     pub player_facing: &'static str,
     pub biome_name: Arc<str>,
-    pub biome_priority: i32,
     pub region_name: &'static str,
     pub ground_y: i32,
-    pub biome_altitude_y: i32,
     pub temperature_percent: u8,
     pub humidity_percent: u8,
     pub continentalness_percent: u8,
-    pub biome_temperature_min_percent: u8,
-    pub biome_temperature_max_percent: u8,
-    pub biome_humidity_min_percent: u8,
-    pub biome_humidity_max_percent: u8,
-    pub biome_altitude_min: Option<i32>,
-    pub biome_altitude_max: Option<i32>,
-    pub biome_continentalness_min_percent: Option<u8>,
-    pub biome_continentalness_max_percent: Option<u8>,
-    pub hotbar_line: Arc<str>,
+    pub hotbar_icon_layers: [u16; 9],
+    pub selected_hotbar_slot: u32,
 }
 
 impl Default for DebugOverlayInput {
@@ -294,44 +297,32 @@ impl Default for DebugOverlayInput {
             player_chunk: [0; 3],
             player_facing: "",
             biome_name: Arc::<str>::from(""),
-            biome_priority: 0,
             region_name: "",
             ground_y: 0,
-            biome_altitude_y: 0,
             temperature_percent: 0,
             humidity_percent: 0,
             continentalness_percent: 0,
-            biome_temperature_min_percent: 0,
-            biome_temperature_max_percent: 100,
-            biome_humidity_min_percent: 0,
-            biome_humidity_max_percent: 100,
-            biome_altitude_min: None,
-            biome_altitude_max: None,
-            biome_continentalness_min_percent: None,
-            biome_continentalness_max_percent: None,
-            hotbar_line: Arc::<str>::from(""),
+            hotbar_icon_layers: [0; 9],
+            selected_hotbar_slot: 0,
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RenderStats {
-    pub gpu_chunks: u32,
     pub drawn_chunks: u32,
     pub frustum_culled_chunks: u32,
     pub occlusion_culled_chunks: u32,
-    pub directional_culled_draws: u32,
     pub opaque_draws: u32,
     pub transparent_draws: u32,
     pub meshing_pending_chunks: u32,
     pub meshing_faces_uploaded: u32,
-    pub meshing_slice_buffer_growths: u32,
     pub hiz_enabled: bool,
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{RenderSettingsUniform, SkyUniform};
+    use super::{HudSpriteInstance, RenderSettingsUniform, SkyUniform};
     use crate::config::SkyConfig;
 
     #[test]
@@ -354,5 +345,10 @@ mod tests {
         ]);
 
         assert!((direction.length() - 1.0).abs() < 1.0e-5);
+    }
+
+    #[test]
+    fn hud_sprite_instance_stays_tightly_packed() {
+        assert_eq!(std::mem::size_of::<HudSpriteInstance>(), 64);
     }
 }

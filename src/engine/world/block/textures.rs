@@ -36,4 +36,11 @@ impl BlockTextures {
             }
         }
     }
+
+    pub fn hud_icon_ref(&self) -> &TextureRef {
+        match self {
+            BlockTextures::All(tex) => tex,
+            BlockTextures::TopBottomSides { sides, .. } => sides,
+        }
+    }
 }

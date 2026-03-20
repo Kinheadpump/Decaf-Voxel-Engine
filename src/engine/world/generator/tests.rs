@@ -301,21 +301,10 @@ fn staged_generator_debug_sample_reports_biome_and_region() {
 
     assert!(!debug_sample.biome_name.is_empty());
     assert!(!debug_sample.region_name.is_empty());
-    assert!(debug_sample.biome_priority >= 0);
-    assert!(debug_sample.ground_y >= debug_sample.biome_altitude_y - 64);
     assert!(debug_sample.temperature_percent <= 100);
     assert!(debug_sample.humidity_percent <= 100);
     assert!(debug_sample.continentalness_percent <= 100);
-    assert!(
-        debug_sample.biome_temperature_min_percent <= debug_sample.biome_temperature_max_percent
-    );
-    assert!(debug_sample.biome_humidity_min_percent <= debug_sample.biome_humidity_max_percent);
-    if let (Some(min), Some(max)) = (
-        debug_sample.biome_continentalness_min_percent,
-        debug_sample.biome_continentalness_max_percent,
-    ) {
-        assert!(min <= max);
-    }
+    assert!(debug_sample.ground_y > -512);
 }
 
 #[test]

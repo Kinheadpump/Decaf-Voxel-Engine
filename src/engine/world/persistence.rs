@@ -12,13 +12,14 @@ use anyhow::Context;
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, bounded, unbounded};
 use serde::{Deserialize, Serialize};
 
+#[cfg(test)]
+use crate::engine::world::storage::World;
 use crate::{
     config::WorldConfig,
     engine::world::{
         block::{id::BlockId, registry::BlockRegistry},
         coord::WorldVoxelPos,
         edit_log::PersistentEditLog,
-        storage::World,
     },
 };
 
@@ -224,6 +225,7 @@ pub fn load_block_edits(
         .with_context(|| format!("failed to load backup world save {}", backup_path.display()))
 }
 
+#[cfg(test)]
 pub fn save_block_edits(
     path: &Path,
     context: &WorldSaveContext,
@@ -269,13 +271,12 @@ fn save_edit_entries(
     }
 
     let metadata = build_save_metadata(path, context, block_registry);
-    let contents =
-        toml::to_string_pretty(&WorldSaveFile {
-            version: WORLD_SAVE_VERSION,
-            metadata,
-            edits: saved_edits,
-        })
-        .context("failed to encode world save")?;
+    let contents = toml::to_string_pretty(&WorldSaveFile {
+        version: WORLD_SAVE_VERSION,
+        metadata,
+        edits: saved_edits,
+    })
+    .context("failed to encode world save")?;
     write_world_save_atomically(path, &contents, block_registry)?;
     Ok(())
 }
@@ -615,9 +616,7 @@ fn world_save_worker_loop(
         }
     }
 
-    if dirty
-        && let Err(err) = save_edit_log(&path, &context, &edits, &block_registry)
-    {
+    if dirty && let Err(err) = save_edit_log(&path, &context, &edits, &block_registry) {
         crate::log_warn!(
             "failed to flush world edits during save worker shutdown to {}: {err:#}",
             path.display()

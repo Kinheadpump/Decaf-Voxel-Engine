@@ -1,5 +1,6 @@
 mod chunks;
 mod draw;
+mod hud;
 mod mesh_upload;
 mod overlay;
 mod pipelines;
@@ -17,11 +18,11 @@ use crate::{
             frustum::Frustum,
             gpu_types::{
                 BaseQuadVertex, DebugOverlayInput, DebugViewMode, DrawMeta, DrawRef,
-                GpuDrawIndirect, RenderBucket, RenderSettingsUniform, RenderStats, SkyUniform,
-                TextGlyphInstance, TextOverlayUniform,
+                GpuDrawIndirect, HudSpriteInstance, RenderBucket, RenderSettingsUniform,
+                RenderStats, SkyUniform, TextGlyphInstance, TextOverlayUniform,
             },
             hiz::HiZOcclusion,
-            materials::{Materials, TextureRegistry},
+            materials::{HudTextureRegistry, Materials, TextureRegistry},
             mesh_pool::{ChunkGpuEntry, MeshPool},
             meshing::ThreadedMesher,
             targets::DepthTarget,
@@ -33,8 +34,8 @@ use crate::{
 use self::{
     draw::{build_draw_ref_bytes, next_face_capacity, transparent_batch_center},
     pipelines::{
-        create_overlay_pipeline, create_screen_tint_pipeline, create_sky_pipeline,
-        create_voxel_pipeline, create_wireframe_pipeline,
+        create_hud_pipeline, create_overlay_pipeline, create_screen_tint_pipeline,
+        create_sky_pipeline, create_voxel_pipeline, create_wireframe_pipeline,
     },
 };
 
@@ -73,6 +74,7 @@ pub struct Renderer {
     pub _sky_uniform_buffer: wgpu::Buffer,
     pub overlay_uniform_buffer: wgpu::Buffer,
     pub overlay_instance_buffer: wgpu::Buffer,
+    pub hud_instance_buffer: wgpu::Buffer,
     pub base_quad_buffer: wgpu::Buffer,
     pub base_line_buffer: wgpu::Buffer,
 
@@ -82,17 +84,20 @@ pub struct Renderer {
     pub sky_bind_group: wgpu::BindGroup,
     pub material_bind_group: wgpu::BindGroup,
     pub overlay_bind_group: wgpu::BindGroup,
+    pub hud_bind_group: wgpu::BindGroup,
 
     pub sky_pipeline: wgpu::RenderPipeline,
     pub opaque_pipeline: wgpu::RenderPipeline,
     pub transparent_pipeline: wgpu::RenderPipeline,
     pub wireframe_pipeline: wgpu::RenderPipeline,
     pub overlay_pipeline: wgpu::RenderPipeline,
+    pub hud_pipeline: wgpu::RenderPipeline,
     pub underwater_tint_pipeline: wgpu::RenderPipeline,
     pub hiz_occlusion: Option<HiZOcclusion>,
     pub mesher: ThreadedMesher,
     pub resolved_blocks: ResolvedBlockRegistry,
     pub _materials: Materials,
+    pub _hud_materials: Materials,
     pub debug_view_mode: DebugViewMode,
     pub debug_overlay: Option<DebugOverlayInput>,
     pub last_frame_stats: RenderStats,
@@ -103,6 +108,9 @@ pub struct Renderer {
     mesh_upload_budget: usize,
     max_visible_draws: usize,
     overlay_config: OverlayConfig,
+    hud_slot_layer: u16,
+    hud_selected_slot_layer: u16,
+    hud_crosshair_layer: u16,
     clear_color: ClearColorConfig,
     sky_enabled: bool,
     opaque_draw_scratch: Vec<DrawMeta>,
@@ -116,11 +124,14 @@ fn non_zero_u64(value: u64, label: &str) -> NonZeroU64 {
     NonZeroU64::new(value).unwrap_or_else(|| panic!("{label} must be non-zero"))
 }
 
+const MAX_HUD_SPRITES: usize = 64;
+
 impl Renderer {
     pub async fn new(
         window: Arc<Window>,
         resolved_blocks: ResolvedBlockRegistry,
         texture_registry: &TextureRegistry,
+        hud_textures: &HudTextureRegistry,
         render_config: &RenderConfig,
         meshing_worker_count: usize,
     ) -> anyhow::Result<Self> {
@@ -253,6 +264,12 @@ impl Renderer {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let hud_instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("hud_instance_buffer"),
+            size: (MAX_HUD_SPRITES * std::mem::size_of::<HudSpriteInstance>()) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
 
         let base_quad = [
             BaseQuadVertex { uv: [0.0, 0.0] },
@@ -280,6 +297,8 @@ impl Renderer {
         });
 
         let materials = Materials::from_texture_registry(&device, &queue, texture_registry)?;
+        let hud_materials =
+            Materials::from_texture_registry(&device, &queue, hud_textures.texture_registry())?;
         let mesher = ThreadedMesher::new(resolved_blocks.clone(), meshing_worker_count);
 
         let camera_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -411,6 +430,40 @@ impl Renderer {
                 count: None,
             }],
         });
+        let hud_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("hud_bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: Some(non_zero_u64(
+                            std::mem::size_of::<TextOverlayUniform>() as u64,
+                            "hud overlay uniform size",
+                        )),
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
 
         let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("camera_bg"),
@@ -478,6 +531,24 @@ impl Renderer {
                 resource: overlay_uniform_buffer.as_entire_binding(),
             }],
         });
+        let hud_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("hud_bg"),
+            layout: &hud_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: overlay_uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&hud_materials.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&hud_materials.sampler),
+                },
+            ],
+        });
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("voxel_shader"),
@@ -490,6 +561,10 @@ impl Renderer {
         let overlay_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("overlay_shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("text_overlay.wgsl").into()),
+        });
+        let hud_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("hud_shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("hud_overlay.wgsl").into()),
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -508,6 +583,11 @@ impl Renderer {
                 bind_group_layouts: &[&overlay_bgl],
                 push_constant_ranges: &[],
             });
+        let hud_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("hud_pipeline_layout"),
+            bind_group_layouts: &[&hud_bgl],
+            push_constant_ranges: &[],
+        });
         let screen_tint_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("screen_tint_pipeline_layout"),
@@ -557,6 +637,13 @@ impl Renderer {
             surface_config.format,
             depth_target.format,
         );
+        let hud_pipeline = create_hud_pipeline(
+            &device,
+            &hud_pipeline_layout,
+            &hud_shader,
+            surface_config.format,
+            depth_target.format,
+        );
         let underwater_tint_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("underwater_tint_shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("underwater_tint.wgsl").into()),
@@ -592,6 +679,7 @@ impl Renderer {
             _sky_uniform_buffer: sky_uniform_buffer,
             overlay_uniform_buffer,
             overlay_instance_buffer,
+            hud_instance_buffer,
             base_quad_buffer,
             base_line_buffer,
             scene_bind_group_layout,
@@ -600,16 +688,19 @@ impl Renderer {
             sky_bind_group,
             material_bind_group,
             overlay_bind_group,
+            hud_bind_group,
             sky_pipeline,
             opaque_pipeline,
             transparent_pipeline,
             wireframe_pipeline,
             overlay_pipeline,
+            hud_pipeline,
             underwater_tint_pipeline,
             hiz_occlusion,
             mesher,
             resolved_blocks,
             _materials: materials,
+            _hud_materials: hud_materials,
             debug_view_mode: DebugViewMode::Shaded,
             debug_overlay: None,
             last_frame_stats: RenderStats {
@@ -623,6 +714,9 @@ impl Renderer {
             mesh_upload_budget: render_config.mesh_upload_budget,
             max_visible_draws,
             overlay_config: render_config.overlay,
+            hud_slot_layer: hud_textures.slot_layer(),
+            hud_selected_slot_layer: hud_textures.selected_slot_layer(),
+            hud_crosshair_layer: hud_textures.crosshair_layer(),
             clear_color: render_config.clear_color,
             sky_enabled: render_config.sky.enabled,
             opaque_draw_scratch: Vec::new(),
@@ -802,21 +896,19 @@ impl Renderer {
         }
 
         let current_stats = RenderStats {
-            gpu_chunks: self.gpu_entries.len() as u32,
             drawn_chunks,
             frustum_culled_chunks,
             occlusion_culled_chunks,
-            directional_culled_draws: 0,
             opaque_draws: opaque_count as u32,
             transparent_draws: (staged_draws.len() - opaque_count) as u32,
             meshing_pending_chunks: self.mesher.pending_count() as u32,
             meshing_faces_uploaded: self.last_meshing_pass_stats.faces_uploaded,
-            meshing_slice_buffer_growths: self.last_meshing_pass_stats.slice_buffer_growths,
             hiz_enabled: self.hiz_occlusion.is_some(),
         };
         self.last_frame_stats = current_stats;
 
         let overlay_instances = self.build_overlay_instances(current_stats);
+        let hud_instances = self.build_hud_sprite_instances();
         self.queue.write_buffer(
             &self.overlay_uniform_buffer,
             0,
@@ -825,6 +917,13 @@ impl Renderer {
                 _pad: [0.0; 2],
             }),
         );
+        if !hud_instances.is_empty() {
+            self.queue.write_buffer(
+                &self.hud_instance_buffer,
+                0,
+                bytemuck::cast_slice(&hud_instances),
+            );
+        }
         if !overlay_instances.is_empty() {
             self.queue.write_buffer(
                 &self.overlay_instance_buffer,
@@ -927,6 +1026,13 @@ impl Renderer {
                 pass.set_pipeline(&self.underwater_tint_pipeline);
                 pass.set_vertex_buffer(0, self.base_quad_buffer.slice(..));
                 pass.draw(0..4, 0..1);
+            }
+
+            if !hud_instances.is_empty() {
+                pass.set_pipeline(&self.hud_pipeline);
+                pass.set_bind_group(0, &self.hud_bind_group, &[]);
+                pass.set_vertex_buffer(0, self.hud_instance_buffer.slice(..));
+                pass.draw(0..4, 0..hud_instances.len() as u32);
             }
 
             if !overlay_instances.is_empty() {
