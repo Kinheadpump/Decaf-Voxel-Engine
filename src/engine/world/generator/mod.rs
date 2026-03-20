@@ -65,7 +65,6 @@ struct SurfaceShapeSample {
 #[derive(Clone, Copy, Debug)]
 struct SurfaceSample<'a> {
     surface_height: f32,
-    biome_altitude: f32,
     biome: BiomeBlendSample<'a>,
 }
 
@@ -104,21 +103,11 @@ pub struct StagedGenerator {
 #[derive(Clone, Debug)]
 pub struct TerrainDebugSample {
     pub biome_name: Arc<str>,
-    pub biome_priority: i32,
     pub region_name: &'static str,
     pub ground_y: i32,
-    pub biome_altitude_y: i32,
     pub temperature_percent: u8,
     pub humidity_percent: u8,
     pub continentalness_percent: u8,
-    pub biome_temperature_min_percent: u8,
-    pub biome_temperature_max_percent: u8,
-    pub biome_humidity_min_percent: u8,
-    pub biome_humidity_max_percent: u8,
-    pub biome_altitude_min: Option<i32>,
-    pub biome_altitude_max: Option<i32>,
-    pub biome_continentalness_min_percent: Option<u8>,
-    pub biome_continentalness_max_percent: Option<u8>,
 }
 
 impl StagedGenerator {
@@ -358,7 +347,7 @@ impl StagedGenerator {
             + mountain_peak_boost
             - surface_shape.river_carve;
 
-        SurfaceSample { surface_height, biome_altitude: surface_shape.biome_altitude, biome }
+        SurfaceSample { surface_height, biome }
     }
 
     fn sample_surface_shape(
@@ -422,29 +411,14 @@ impl StagedGenerator {
             foliage_color: surface.biome.dominant.foliage_color,
         };
         let dominant_biome = surface.biome.dominant;
-        let (biome_temperature_min, biome_temperature_max) = dominant_biome.temperature_range();
-        let (biome_humidity_min, biome_humidity_max) = dominant_biome.humidity_range();
-        let (biome_altitude_min, biome_altitude_max) = dominant_biome.altitude_range();
-        let (biome_continentalness_min, biome_continentalness_max) =
-            dominant_biome.continentalness_range();
 
         TerrainDebugSample {
             biome_name: dominant_biome.name.clone(),
-            biome_priority: dominant_biome.priority(),
             region_name: blueprint.region_name,
             ground_y: self.top_solid_y_for_column(column, world_x, world_z),
-            biome_altitude_y: surface.biome_altitude.round() as i32,
             temperature_percent: unit_to_percent(climate.temperature),
             humidity_percent: unit_to_percent(climate.humidity),
             continentalness_percent: unit_to_percent(blueprint.continentalness),
-            biome_temperature_min_percent: unit_to_percent(biome_temperature_min),
-            biome_temperature_max_percent: unit_to_percent(biome_temperature_max),
-            biome_humidity_min_percent: unit_to_percent(biome_humidity_min),
-            biome_humidity_max_percent: unit_to_percent(biome_humidity_max),
-            biome_altitude_min: biome_altitude_min.map(|value| value.round() as i32),
-            biome_altitude_max: biome_altitude_max.map(|value| value.round() as i32),
-            biome_continentalness_min_percent: biome_continentalness_min.map(unit_to_percent),
-            biome_continentalness_max_percent: biome_continentalness_max.map(unit_to_percent),
         }
     }
 }

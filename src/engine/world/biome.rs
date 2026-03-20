@@ -277,26 +277,6 @@ impl ResolvedBiome {
 
         temperature_span * humidity_span * altitude_span * continentalness_span
     }
-
-    pub fn priority(&self) -> i32 {
-        self.priority
-    }
-
-    pub fn temperature_range(&self) -> (f32, f32) {
-        (self.temperature_min, self.temperature_max)
-    }
-
-    pub fn humidity_range(&self) -> (f32, f32) {
-        (self.humidity_min, self.humidity_max)
-    }
-
-    pub fn altitude_range(&self) -> (Option<f32>, Option<f32>) {
-        self.altitude_constraint.bounds()
-    }
-
-    pub fn continentalness_range(&self) -> (Option<f32>, Option<f32>) {
-        self.continentalness_constraint.bounds()
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -378,10 +358,6 @@ impl RangeConstraint {
             (Some(_), None) | (None, Some(_)) => 0.5,
             (None, None) => 1.0,
         }
-    }
-
-    fn bounds(&self) -> (Option<f32>, Option<f32>) {
-        (self.min, self.max)
     }
 }
 

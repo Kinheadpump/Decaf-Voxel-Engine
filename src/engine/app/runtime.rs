@@ -22,7 +22,7 @@ use crate::{
         },
         render::{
             gpu_types::{DebugOverlayInput, DebugViewMode},
-            materials::create_texture_registry,
+            materials::{HudTextureRegistry, create_hud_texture_registry, create_texture_registry},
             renderer::Renderer,
         },
         world::{
@@ -58,9 +58,9 @@ pub(super) struct AppRuntime {
     renderer: Renderer,
     player: Player,
     world: World,
-    block_registry: BlockRegistry,
     save_file: PathBuf,
     world_saver: persistence::AsyncWorldSaver,
+    hud_texture_registry: HudTextureRegistry,
     edit_state: PlayerEditState,
     input: InputState,
     total_time: f32,
@@ -93,6 +93,7 @@ impl AppRuntime {
         let water_block_id = block_registry.must_get_id("water");
         let edit_state = PlayerEditState::new(default_hotbar_slots(&block_registry));
         let texture_registry = create_texture_registry(&block_registry);
+        let hud_texture_registry = create_hud_texture_registry(&block_registry);
         let resolved_blocks =
             ResolvedBlockRegistry::build(&block_registry, texture_registry.layer_map());
         let biomes = BiomeTable::load_from_file(&world_config.biomes_file, &block_registry)?;
@@ -151,6 +152,7 @@ impl AppRuntime {
             window,
             resolved_blocks,
             &texture_registry,
+            &hud_texture_registry,
             &render_config,
             meshing_worker_count,
         )
@@ -169,9 +171,9 @@ impl AppRuntime {
             renderer,
             player,
             world,
-            block_registry,
             save_file,
             world_saver,
+            hud_texture_registry,
             edit_state,
             input: InputState::new(),
             total_time: 0.0,
@@ -191,7 +193,6 @@ impl AppRuntime {
 
     pub(super) fn begin_frame(&mut self) {
         self.input.begin_frame();
-        self.edit_state.tick(self.input.dt);
         self.total_time += self.input.dt;
         self.fps_counter.sample(self.input.dt);
     }
@@ -279,9 +280,7 @@ impl AppRuntime {
 
         if self.input.cursor_grabbed && !debug_modifier {
             for (slot, key) in hotbar_digit_keys().into_iter().enumerate() {
-                if self.input.key_pressed(key)
-                    && self.edit_state.select_slot(slot, &self.block_registry)
-                {
+                if self.input.key_pressed(key) && self.edit_state.select_slot(slot) {
                     window.request_redraw();
                 }
             }
@@ -323,7 +322,10 @@ impl AppRuntime {
         let player_chunk =
             crate::engine::world::coord::ChunkCoord::from_world_voxel(player_voxel).0;
         let terrain_debug = self.staged_generator.debug_sample_at(player_voxel.x, player_voxel.z);
-        let hud = self.edit_state.build_hud_state(&self.block_registry);
+        let hotbar_icon_layers = self
+            .edit_state
+            .hotbar_slots()
+            .map(|block_id| self.hud_texture_registry.block_icon_layer(block_id));
 
         DebugOverlayInput {
             show_debug: self.show_debug_overlay,
@@ -334,22 +336,13 @@ impl AppRuntime {
             player_chunk: [player_chunk.x, player_chunk.y, player_chunk.z],
             player_facing: self.player.cardinal_facing(),
             biome_name: terrain_debug.biome_name,
-            biome_priority: terrain_debug.biome_priority,
             region_name: terrain_debug.region_name,
             ground_y: terrain_debug.ground_y,
-            biome_altitude_y: terrain_debug.biome_altitude_y,
             temperature_percent: terrain_debug.temperature_percent,
             humidity_percent: terrain_debug.humidity_percent,
             continentalness_percent: terrain_debug.continentalness_percent,
-            biome_temperature_min_percent: terrain_debug.biome_temperature_min_percent,
-            biome_temperature_max_percent: terrain_debug.biome_temperature_max_percent,
-            biome_humidity_min_percent: terrain_debug.biome_humidity_min_percent,
-            biome_humidity_max_percent: terrain_debug.biome_humidity_max_percent,
-            biome_altitude_min: terrain_debug.biome_altitude_min,
-            biome_altitude_max: terrain_debug.biome_altitude_max,
-            biome_continentalness_min_percent: terrain_debug.biome_continentalness_min_percent,
-            biome_continentalness_max_percent: terrain_debug.biome_continentalness_max_percent,
-            hotbar_line: hud.hotbar_line,
+            hotbar_icon_layers,
+            selected_hotbar_slot: self.edit_state.selected_slot() as u32,
         }
     }
 
@@ -367,7 +360,7 @@ impl AppRuntime {
 
         let scroll_steps = self.input.mouse_scroll_lines.round() as i32;
         if scroll_steps != 0 {
-            let _ = self.edit_state.cycle_selection(scroll_steps, &self.block_registry);
+            let _ = self.edit_state.cycle_selection(scroll_steps);
         }
 
         let interaction_origin = self.player.eye_position();
@@ -382,15 +375,12 @@ impl AppRuntime {
                 interaction_direction,
                 self.player_config.reach_distance,
             ) {
-                self.edit_state.pick_block(preview.target_block_id, &self.block_registry);
-            } else {
-                self.edit_state.set_feedback("No block to pick".to_string());
+                self.edit_state.pick_block(preview.target_block_id);
             }
         }
 
         if self.input.key_pressed(KeyCode::KeyZ) {
-            if let Some(change) = self.edit_state.undo_last_edit(&mut self.world, &self.block_registry)
-            {
+            if let Some(change) = self.edit_state.undo_last_edit(&mut self.world) {
                 self.queue_world_edit_save(change.position, change.after);
             }
         }
@@ -404,22 +394,15 @@ impl AppRuntime {
                 self.player_config.reach_distance,
             ) {
                 RemoveBlockOutcome::Removed(change) => {
-                    self.edit_state.record_edit(
-                        crate::engine::player::editing::BlockEditRecord {
-                            position: change.position,
-                            before: change.before,
-                            after: change.after,
-                        },
-                        &self.block_registry,
-                        change.before,
-                        "Broke",
-                    );
+                    self.edit_state.record_edit(crate::engine::player::editing::BlockEditRecord {
+                        position: change.position,
+                        before: change.before,
+                        after: change.after,
+                    });
                     self.queue_world_edit_save(change.position, change.after);
                     crate::log_debug!("Removed block");
                 }
-                RemoveBlockOutcome::NoTarget => {
-                    self.edit_state.set_feedback("No block to remove".to_string());
-                }
+                RemoveBlockOutcome::NoTarget => {}
             }
         }
 
@@ -435,34 +418,20 @@ impl AppRuntime {
                 selected_block,
             ) {
                 PlaceBlockOutcome::Placed(change) => {
-                    self.edit_state.record_edit(
-                        crate::engine::player::editing::BlockEditRecord {
-                            position: change.position,
-                            before: change.before,
-                            after: change.after,
-                        },
-                        &self.block_registry,
-                        change.after,
-                        "Placed",
-                    );
+                    self.edit_state.record_edit(crate::engine::player::editing::BlockEditRecord {
+                        position: change.position,
+                        before: change.before,
+                        after: change.after,
+                    });
                     self.queue_world_edit_save(change.position, change.after);
                     crate::log_debug!("Placed block");
                 }
-                PlaceBlockOutcome::NoTarget => {
-                    self.edit_state.set_feedback("No block in reach".to_string());
-                }
-                PlaceBlockOutcome::NoPlacement => {
-                    self.edit_state.set_feedback("No placement space".to_string());
-                }
-                PlaceBlockOutcome::Occupied => {
-                    self.edit_state.set_feedback("Placement blocked".to_string());
-                }
-                PlaceBlockOutcome::BlockedByPlayer => {
-                    self.edit_state.set_feedback("Cannot place inside player".to_string());
-                }
+                PlaceBlockOutcome::NoTarget
+                | PlaceBlockOutcome::NoPlacement
+                | PlaceBlockOutcome::Occupied
+                | PlaceBlockOutcome::BlockedByPlayer => {}
             }
         }
-
     }
 
     fn update_world_streaming(&mut self) -> anyhow::Result<()> {

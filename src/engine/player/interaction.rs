@@ -48,42 +48,6 @@ pub enum RemoveBlockOutcome {
     NoTarget,
 }
 
-pub fn place_block_in_front(
-    world: &mut World,
-    resolved_blocks: &ResolvedBlockRegistry,
-    player: &Player,
-    origin: Vec3,
-    direction: Vec3,
-    reach_distance: f32,
-    block_id: BlockId,
-) -> bool {
-    matches!(
-        place_block_in_front_detailed(
-            world,
-            resolved_blocks,
-            player,
-            origin,
-            direction,
-            reach_distance,
-            block_id,
-        ),
-        PlaceBlockOutcome::Placed(_)
-    )
-}
-
-pub fn remove_block_in_front(
-    world: &mut World,
-    resolved_blocks: &ResolvedBlockRegistry,
-    origin: Vec3,
-    direction: Vec3,
-    reach_distance: f32,
-) -> bool {
-    matches!(
-        remove_block_in_front_detailed(world, resolved_blocks, origin, direction, reach_distance),
-        RemoveBlockOutcome::Removed(_)
-    )
-}
-
 pub fn place_block_in_front_detailed(
     world: &mut World,
     resolved_blocks: &ResolvedBlockRegistry,
@@ -338,15 +302,6 @@ fn placeability_at(
     }
 }
 
-fn can_place_block_at(
-    world: &World,
-    resolved_blocks: &ResolvedBlockRegistry,
-    player: &Player,
-    placement: IVec3,
-) -> bool {
-    matches!(placeability_at(world, resolved_blocks, player, placement), PlacementValidity::Allowed)
-}
-
 fn current_block_id(world: &World, position: IVec3) -> BlockId {
     VoxelAccessor { world }.get_world_voxel(position).block_id()
 }
@@ -447,15 +402,18 @@ mod tests {
 
         player.position = Vec3::new(0.5, 0.0, 1.5);
 
-        assert!(!place_block_in_front(
-            &mut world,
-            &resolved,
-            &player,
-            Vec3::new(0.5, 0.5, 0.5),
-            Vec3::new(0.0, 0.0, 1.0),
-            8.0,
-            stone,
-        ));
+        assert_eq!(
+            place_block_in_front_detailed(
+                &mut world,
+                &resolved,
+                &player,
+                Vec3::new(0.5, 0.5, 0.5),
+                Vec3::new(0.0, 0.0, 1.0),
+                8.0,
+                stone,
+            ),
+            PlaceBlockOutcome::BlockedByPlayer
+        );
     }
 
     #[test]
@@ -472,7 +430,10 @@ mod tests {
         assert!(world.set_block_world(IVec3::ZERO, stone));
         player.position = Vec3::new(10.0, 10.0, 10.0);
 
-        assert!(!can_place_block_at(&world, &resolved, &player, IVec3::ZERO));
+        assert_eq!(
+            placeability_at(&world, &resolved, &player, IVec3::ZERO),
+            PlacementValidity::Occupied
+        );
     }
 
     #[test]
@@ -513,14 +474,17 @@ mod tests {
         assert!(world.set_block_world(IVec3::new(0, 0, 3), stone));
         player.position = Vec3::new(10.0, 10.0, 10.0);
 
-        assert!(place_block_in_front(
-            &mut world,
-            &resolved,
-            &player,
-            Vec3::new(0.5, 0.5, 0.5),
-            Vec3::new(0.0, 0.0, 1.0),
-            8.0,
-            stone,
+        assert!(matches!(
+            place_block_in_front_detailed(
+                &mut world,
+                &resolved,
+                &player,
+                Vec3::new(0.5, 0.5, 0.5),
+                Vec3::new(0.0, 0.0, 1.0),
+                8.0,
+                stone,
+            ),
+            PlaceBlockOutcome::Placed(_)
         ));
 
         let voxel = {
@@ -541,12 +505,15 @@ mod tests {
         assert!(world.set_block_world(IVec3::new(0, 0, 1), water));
         assert!(world.set_block_world(IVec3::new(0, 0, 2), stone));
 
-        assert!(remove_block_in_front(
-            &mut world,
-            &resolved,
-            Vec3::new(0.5, 0.5, 0.5),
-            Vec3::new(0.0, 0.0, 1.0),
-            8.0,
+        assert!(matches!(
+            remove_block_in_front_detailed(
+                &mut world,
+                &resolved,
+                Vec3::new(0.5, 0.5, 0.5),
+                Vec3::new(0.0, 0.0, 1.0),
+                8.0,
+            ),
+            RemoveBlockOutcome::Removed(_)
         ));
 
         let accessor = VoxelAccessor { world: &world };

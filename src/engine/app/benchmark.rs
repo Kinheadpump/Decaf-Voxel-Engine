@@ -11,13 +11,12 @@ use crate::{
     config::{Config, MeshingUploadBenchmarkConfig},
     engine::{
         app::{
-            runtime::resolve_background_worker_counts,
-            spawn::spawn_position_near_world_origin,
+            runtime::resolve_background_worker_counts, spawn::spawn_position_near_world_origin,
             streaming::WorldStreamer,
         },
         core::math::{IVec3, Vec3},
         render::{
-            materials::create_texture_registry,
+            materials::{create_hud_texture_registry, create_texture_registry},
             meshing::MeshingFocus,
             renderer::{MeshingPassStats, Renderer},
         },
@@ -35,16 +34,8 @@ use crate::{
     logging,
 };
 
-const BENCHMARK_LOCAL_POSITIONS: [[u32; 3]; 8] = [
-    [4, 4, 4],
-    [27, 16, 11],
-    [0, 8, 8],
-    [8, 8, 31],
-    [31, 8, 8],
-    [8, 0, 8],
-    [8, 31, 8],
-    [8, 8, 0],
-];
+const BENCHMARK_LOCAL_POSITIONS: [[u32; 3]; 8] =
+    [[4, 4, 4], [27, 16, 11], [0, 8, 8], [8, 8, 31], [31, 8, 8], [8, 0, 8], [8, 31, 8], [8, 8, 0]];
 
 pub(super) async fn run_meshing_upload(config: Config) -> anyhow::Result<()> {
     let _span = crate::profile_span!("benchmark::meshing_upload");
@@ -84,6 +75,7 @@ pub(super) async fn run_meshing_upload(config: Config) -> anyhow::Result<()> {
 
     let block_registry = create_default_block_registry();
     let texture_registry = create_texture_registry(&block_registry);
+    let hud_texture_registry = create_hud_texture_registry(&block_registry);
     let resolved_blocks =
         ResolvedBlockRegistry::build(&block_registry, texture_registry.layer_map());
     let biomes = BiomeTable::load_from_file(&world_config.biomes_file, &block_registry)?;
@@ -96,10 +88,8 @@ pub(super) async fn run_meshing_upload(config: Config) -> anyhow::Result<()> {
     ));
     let spawn_position =
         spawn_position_near_world_origin(&staged_generator, &world_config, &player_config);
-    let focus = MeshingFocus::new(
-        ChunkCoord::from_world_voxel(spawn_position.floor().as_ivec3()),
-        Vec3::Z,
-    );
+    let focus =
+        MeshingFocus::new(ChunkCoord::from_world_voxel(spawn_position.floor().as_ivec3()), Vec3::Z);
 
     let chunk_generator: Arc<dyn ChunkGenerator> = staged_generator.clone();
     let mut streamer = WorldStreamer::new(
@@ -120,27 +110,20 @@ pub(super) async fn run_meshing_upload(config: Config) -> anyhow::Result<()> {
         window.clone(),
         resolved_blocks,
         &texture_registry,
+        &hud_texture_registry,
         &render_config,
         meshing_worker_count,
     )
     .await?;
 
-    let initial_full_build = run_meshing_pass(
-        &mut renderer,
-        &mut world,
-        focus,
-        benchmark_config.wait_for_gpu,
-    )?;
+    let initial_full_build =
+        run_meshing_pass(&mut renderer, &mut world, focus, benchmark_config.wait_for_gpu)?;
 
     let mut workload = BenchmarkWorkload::new(&world, &block_registry, focus, benchmark_config)
         .context("failed to build a meshing/upload benchmark workload")?;
     workload.prepare_baseline(&mut world);
-    let _baseline_prepare = run_meshing_pass(
-        &mut renderer,
-        &mut world,
-        focus,
-        benchmark_config.wait_for_gpu,
-    )?;
+    let _baseline_prepare =
+        run_meshing_pass(&mut renderer, &mut world, focus, benchmark_config.wait_for_gpu)?;
 
     for _ in 0..benchmark_config.warmup_iterations {
         let _ = run_benchmark_iteration(
@@ -164,13 +147,7 @@ pub(super) async fn run_meshing_upload(config: Config) -> anyhow::Result<()> {
         steady_state.record(iteration);
     }
 
-    print_report(
-        benchmark_config,
-        focus,
-        &workload,
-        initial_full_build,
-        steady_state.finish(),
-    );
+    print_report(benchmark_config, focus, &workload, initial_full_build, steady_state.finish());
 
     drop(renderer);
     drop(window);
@@ -189,9 +166,8 @@ fn sanitize_benchmark_config(
         benchmark_config.edit_radius_xz.clamp(0, benchmark_config.preload_radius_xz);
     benchmark_config.edit_radius_y =
         benchmark_config.edit_radius_y.clamp(0, benchmark_config.preload_radius_y);
-    benchmark_config.edits_per_chunk = benchmark_config
-        .edits_per_chunk
-        .clamp(1, BENCHMARK_LOCAL_POSITIONS.len());
+    benchmark_config.edits_per_chunk =
+        benchmark_config.edits_per_chunk.clamp(1, BENCHMARK_LOCAL_POSITIONS.len());
     benchmark_config.window_width = benchmark_config.window_width.max(1);
     benchmark_config.window_height = benchmark_config.window_height.max(1);
     benchmark_config
@@ -255,8 +231,7 @@ impl BenchmarkAccumulator {
         self.pass_totals.chunk_results += u128::from(iteration.pass.chunk_results);
         self.pass_totals.faces_uploaded += u128::from(iteration.pass.faces_uploaded);
         self.pass_totals.dirty_slices += u128::from(iteration.pass.dirty_slices);
-        self.pass_totals.slice_buffer_growths +=
-            u128::from(iteration.pass.slice_buffer_growths);
+        self.pass_totals.slice_buffer_growths += u128::from(iteration.pass.slice_buffer_growths);
         self.pass_totals.build_cpu_time_ns += u128::from(iteration.pass.build_cpu_time_ns);
         self.pass_totals.snapshot_capture_cpu_time_ns +=
             u128::from(iteration.pass.snapshot_capture_cpu_time_ns);
@@ -264,8 +239,7 @@ impl BenchmarkAccumulator {
             u128::from(iteration.pass.slice_construction_cpu_time_ns);
         self.pass_totals.greedy_merge_cpu_time_ns +=
             u128::from(iteration.pass.greedy_merge_cpu_time_ns);
-        self.pass_totals.flatten_cpu_time_ns +=
-            u128::from(iteration.pass.flatten_cpu_time_ns);
+        self.pass_totals.flatten_cpu_time_ns += u128::from(iteration.pass.flatten_cpu_time_ns);
         self.pass_totals.upload_cpu_time_ns += u128::from(iteration.pass.upload_cpu_time_ns);
         self.pass_totals.wait_cpu_time_ns += u128::from(iteration.pass.wait_cpu_time_ns);
     }
@@ -299,10 +273,7 @@ impl BenchmarkAccumulator {
                     self.pass_totals.greedy_merge_cpu_time_ns,
                     iterations,
                 ),
-                flatten_cpu_time_ns: average_u64(
-                    self.pass_totals.flatten_cpu_time_ns,
-                    iterations,
-                ),
+                flatten_cpu_time_ns: average_u64(self.pass_totals.flatten_cpu_time_ns, iterations),
                 upload_cpu_time_ns: average_u64(self.pass_totals.upload_cpu_time_ns, iterations),
                 wait_cpu_time_ns: average_u64(self.pass_totals.wait_cpu_time_ns, iterations),
             },
@@ -447,10 +418,7 @@ fn print_report(
     initial_full_build: BenchmarkIteration,
     steady_state: BenchmarkSummary,
 ) {
-    crate::log_info!(
-        "Meshing/upload benchmark focus chunk: {:?}",
-        focus.center.0
-    );
+    crate::log_info!("Meshing/upload benchmark focus chunk: {:?}", focus.center.0);
     crate::log_info!(
         "Workload: {} chunks, {} edit sites, toggle {} <-> {}",
         workload.chunk_count(),

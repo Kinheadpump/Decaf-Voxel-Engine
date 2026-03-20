@@ -2,6 +2,7 @@ use crate::engine::core::types::FaceDir;
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum BiomeTint {
     #[default]
     None = 0,
@@ -10,6 +11,7 @@ pub enum BiomeTint {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum BlockTint {
     #[default]
     None,
@@ -21,6 +23,7 @@ pub enum BlockTint {
     },
 }
 
+#[allow(dead_code)]
 impl BlockTint {
     pub fn all(tint: BiomeTint) -> Self {
         Self::All(tint)

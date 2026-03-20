@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::engine::core::types::MAX_TEXTURE_LAYERS;
-use crate::engine::world::block::registry::BlockRegistry;
+use crate::engine::world::block::{id::BlockId, registry::BlockRegistry};
 use anyhow::{Context, bail};
 
 #[derive(Clone, Default)]
@@ -56,6 +56,65 @@ pub fn create_texture_registry(blocks: &BlockRegistry) -> TextureRegistry {
     }
 
     registry
+}
+
+#[derive(Clone)]
+pub struct HudTextureRegistry {
+    textures: TextureRegistry,
+    slot_layer: u16,
+    selected_slot_layer: u16,
+    crosshair_layer: u16,
+    empty_icon_layer: u16,
+    block_icon_layers: HashMap<BlockId, u16>,
+}
+
+impl HudTextureRegistry {
+    pub fn texture_registry(&self) -> &TextureRegistry {
+        &self.textures
+    }
+
+    pub fn slot_layer(&self) -> u16 {
+        self.slot_layer
+    }
+
+    pub fn selected_slot_layer(&self) -> u16 {
+        self.selected_slot_layer
+    }
+
+    pub fn crosshair_layer(&self) -> u16 {
+        self.crosshair_layer
+    }
+
+    pub fn block_icon_layer(&self, block_id: BlockId) -> u16 {
+        self.block_icon_layers.get(&block_id).copied().unwrap_or(self.empty_icon_layer)
+    }
+}
+
+pub fn create_hud_texture_registry(blocks: &BlockRegistry) -> HudTextureRegistry {
+    let mut textures = TextureRegistry::new();
+    let slot_layer = textures.register("ui/hotbar_slot");
+    let selected_slot_layer = textures.register("ui/hotbar_slot_selected");
+    let crosshair_layer = textures.register("ui/crosshair_x");
+    let empty_icon_layer = textures.register("ui/empty");
+    let mut block_icon_layers = HashMap::new();
+
+    for block in blocks.iter() {
+        let layer = if block.id == BlockId::AIR {
+            empty_icon_layer
+        } else {
+            textures.register(block.textures.hud_icon_ref().0.clone())
+        };
+        block_icon_layers.insert(block.id, layer);
+    }
+
+    HudTextureRegistry {
+        textures,
+        slot_layer,
+        selected_slot_layer,
+        crosshair_layer,
+        empty_icon_layer,
+        block_icon_layers,
+    }
 }
 
 pub struct Materials {
