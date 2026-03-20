@@ -49,8 +49,10 @@ fn vs_main(
 fn glyph_bits(code: u32) -> u32 {
     switch code {
         case 32u { return 0x00000u; } // space
+        case 43u { return 0x4E444u; } // +
         case 45u { return 0x00F00u; } // -
         case 58u { return 0x04040u; } // :
+        case 60u { return 0x24842u; } // <
         case 48u { return 0xF999Fu; } // 0
         case 49u { return 0x72262u; } // 1
         case 50u { return 0xF8F1Fu; } // 2
@@ -61,6 +63,7 @@ fn glyph_bits(code: u32) -> u32 {
         case 55u { return 0x1111Fu; } // 7
         case 56u { return 0xF9F9Fu; } // 8
         case 57u { return 0xF1F9Fu; } // 9
+        case 62u { return 0x42124u; } // >
         case 65u { return 0x99F96u; } // A
         case 66u { return 0xE9E9Eu; } // B
         case 67u { return 0x78887u; } // C
@@ -87,6 +90,8 @@ fn glyph_bits(code: u32) -> u32 {
         case 88u { return 0x99699u; } // X
         case 89u { return 0x22699u; } // Y
         case 90u { return 0xF421Fu; } // Z
+        case 91u { return 0xE888Eu; } // [
+        case 93u { return 0x71117u; } // ]
         default { return 0x00000u; }
     }
 }
